@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>生成扩展图标</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 50px auto;
+            padding: 20px;
+        }
+        .icon-preview {
+            display: inline-block;
+            margin: 10px;
+            text-align: center;
+        }
+        canvas {
+            border: 1px solid #ddd;
+            margin: 5px;
+        }
+        button {
+            padding: 10px 20px;
+            background: #667eea;
+            color: white;
+            border: none;
+            border-radius: 5px;
+            cursor: pointer;
+            font-size: 16px;
+        }
+        button:hover {
+            background: #5568d3;
+        }
+    </style>
+</head>
+<body>
+    <h1>Chrome 扩展图标生成器</h1>
+    <p>点击按钮生成图标，然后右键保存图片到 icons 文件夹</p>
+    
+    <div id="preview"></div>
+    
+    <button onclick="generateIcons()">生成图标</button>
+    
+    <script>
+        function generateIcons() {
+            const sizes = [16, 48, 128];
+            const preview = document.getElementById('preview');
+            preview.innerHTML = '';
+            
+            sizes.forEach(size => {
+                const canvas = document.createElement('canvas');
+                canvas.width = size;
+                canvas.height = size;
+                const ctx = canvas.getContext('2d');
+                
+                // 绘制渐变背景
+                const gradient = ctx.createLinearGradient(0, 0, size, size);
+                gradient.addColorStop(0, '#667eea');
+                gradient.addColorStop(1, '#764ba2');
+                ctx.fillStyle = gradient;
+                ctx.fillRect(0, 0, size, size);
+                
+                // 绘制下载图标（简单的向下箭头）
+                ctx.strokeStyle = 'white';
+                ctx.fillStyle = 'white';
+                ctx.lineWidth = Math.max(2, size / 16);
+                
+                const centerX = size / 2;
+                const centerY = size / 2;
+                const arrowSize = size * 0.3;
+                
+                // 绘制箭头
+                ctx.beginPath();
+                ctx.moveTo(centerX, centerY - arrowSize / 2);
+                ctx.lineTo(centerX, centerY + arrowSize / 2);
+                ctx.moveTo(centerX - arrowSize / 2, centerY);
+                ctx.lineTo(centerX, centerY + arrowSize / 2);
+                ctx.lineTo(centerX + arrowSize / 2, centerY);
+                ctx.stroke();
+                
+                // 创建下载链接
+                const div = document.createElement('div');
+                div.className = 'icon-preview';
+                div.innerHTML = `
+                    <canvas id="canvas${size}" width="${size}" height="${size}"></canvas>
+                    <br>
+                    <a href="#" onclick="downloadIcon(${size}); return false;">下载 icon${size}.png</a>
+                `;
+                preview.appendChild(div);
+                
+                // 复制到新 canvas
+                const newCanvas = document.getElementById(`canvas${size}`);
+                const newCtx = newCanvas.getContext('2d');
+                newCtx.drawImage(canvas, 0, 0);
+            });
+        }
+        
+        function downloadIcon(size) {
+            const canvas = document.getElementById(`canvas${size}`);
+            canvas.toBlob(blob => {
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `icon${size}.png`;
+                a.click();
+                URL.revokeObjectURL(url);
+            });
+        }
+        
+        // 页面加载时自动生成
+        window.onload = generateIcons;
+    </script>
+</body>
+</html>
+
+
+

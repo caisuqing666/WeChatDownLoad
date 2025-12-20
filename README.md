@@ -9,6 +9,11 @@
 
 下载链接：https://pan.quark.cn/s/09bdfa78d09b
 
+**macOS 用户注意**：如果在 macOS 上无法打开应用程序，请查看 [macOS 安装指南](MACOS_INSTALL.md) 或运行修复脚本：
+```bash
+./fix_macos_app.sh
+```
+
 欢迎关注公众号：长风的储物柜，获取最新更新消息🥳
 
 ![微信公众号](https://github.com/user-attachments/assets/584c65c4-da1c-4e31-bd92-b18e3589483d)

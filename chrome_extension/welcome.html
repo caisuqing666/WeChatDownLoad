@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>欢迎使用微信公众号文章下载器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        .container {
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 600px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+        }
+        h1 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 28px;
+        }
+        p {
+            color: #666;
+            line-height: 1.8;
+            margin-bottom: 15px;
+        }
+        .steps {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+        }
+        .step {
+            margin: 15px 0;
+            padding-left: 30px;
+            position: relative;
+        }
+        .step::before {
+            content: counter(step-counter);
+            counter-increment: step-counter;
+            position: absolute;
+            left: 0;
+            top: 0;
+            background: #667eea;
+            color: white;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            font-weight: bold;
+        }
+        .steps {
+            counter-reset: step-counter;
+        }
+        .button {
+            display: inline-block;
+            padding: 12px 30px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            text-decoration: none;
+            border-radius: 8px;
+            margin-top: 20px;
+            transition: transform 0.3s;
+        }
+        .button:hover {
+            transform: translateY(-2px);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎉 欢迎使用微信公众号文章下载器！</h1>
+        <p>感谢您安装本扩展。现在您可以轻松下载微信公众号文章了。</p>
+        
+        <div class="steps">
+            <div class="step">
+                <strong>访问文章</strong><br>
+                打开任意一篇微信公众号文章
+            </div>
+            <div class="step">
+                <strong>点击图标</strong><br>
+                点击浏览器工具栏中的扩展图标
+            </div>
+            <div class="step">
+                <strong>选择格式</strong><br>
+                选择 Markdown、HTML 或纯文本格式
+            </div>
+            <div class="step">
+                <strong>下载文章</strong><br>
+                点击下载按钮，文件会自动保存
+            </div>
+        </div>
+        
+        <p><strong>提示：</strong>扩展仅在微信公众号文章页面（mp.weixin.qq.com）工作。</p>
+        
+        <a href="https://mp.weixin.qq.com" class="button" target="_blank">前往微信公众号</a>
+    </div>
+</body>
+</html>
+
+
+

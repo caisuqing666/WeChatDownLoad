@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>微信公众号文章下载器</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            width: 400px;
+            min-height: 500px;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Microsoft YaHei', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: #333;
+        }
+
+        .container {
+            background: white;
+            margin: 10px;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .header {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .header h1 {
+            font-size: 20px;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .header p {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .status {
+            padding: 10px;
+            border-radius: 8px;
+            margin-bottom: 15px;
+            font-size: 14px;
+            text-align: center;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+
+        .article-info {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 15px;
+        }
+
+        .article-info h3 {
+            font-size: 16px;
+            margin-bottom: 10px;
+            color: #333;
+            word-break: break-word;
+        }
+
+        .article-info .meta {
+            font-size: 12px;
+            color: #666;
+            margin-top: 8px;
+        }
+
+        .article-info .meta span {
+            display: block;
+            margin: 4px 0;
+        }
+
+        .button-group {
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+
+        button {
+            padding: 12px 20px;
+            border: none;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.3s;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.2);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        button.secondary {
+            background: #6c757d;
+        }
+
+        .format-select {
+            margin-bottom: 10px;
+        }
+
+        .format-select label {
+            display: block;
+            font-size: 12px;
+            color: #666;
+            margin-bottom: 5px;
+        }
+
+        .format-select select {
+            width: 100%;
+            padding: 8px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+            background: white;
+        }
+
+        .loading {
+            display: none;
+            text-align: center;
+            padding: 10px;
+            color: #666;
+        }
+
+        .loading.active {
+            display: block;
+        }
+
+        .footer {
+            text-align: center;
+            margin-top: 15px;
+            font-size: 11px;
+            color: #999;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📥 文章下载器</h1>
+            <p>轻松下载微信公众号文章</p>
+        </div>
+
+        <div id="status" class="status info">
+            正在检测页面...
+        </div>
+
+        <div id="articleInfo" class="article-info" style="display: none;">
+            <h3 id="articleTitle"></h3>
+            <div class="meta">
+                <span>作者: <span id="articleAuthor"></span></span>
+                <span>发布时间: <span id="articleTime"></span></span>
+                <span>图片数量: <span id="imageCount">0</span></span>
+            </div>
+        </div>
+
+        <!-- 模式切换 -->
+        <div style="margin-bottom: 15px; display: flex; gap: 5px;">
+            <button id="singleModeBtn" style="flex: 1; padding: 8px; font-size: 12px; background: #667eea;">单篇下载</button>
+            <button id="batchModeBtn" style="flex: 1; padding: 8px; font-size: 12px; background: #6c757d;">批量下载</button>
+        </div>
+
+        <div class="format-select">
+            <label>导出格式:</label>
+            <select id="formatSelect">
+                <option value="markdown">Markdown (.md)</option>
+                <option value="html">HTML (.html)</option>
+                <option value="pdf">PDF (.pdf)</option>
+                <option value="text">纯文本 (.txt)</option>
+            </select>
+        </div>
+
+        <!-- 单篇文章下载区域 -->
+        <div id="singleDownloadSection">
+            <div class="button-group">
+                <button id="downloadBtn" disabled>下载文章</button>
+                <button id="downloadWithImagesBtn" disabled class="secondary">下载文章（含图片）</button>
+            </div>
+        </div>
+
+        <!-- 批量下载区域 -->
+        <div id="batchDownloadSection" style="display: none;">
+            <div style="background: #f8f9fa; padding: 10px; border-radius: 8px; margin-bottom: 10px; font-size: 12px;">
+                <div style="margin-bottom: 10px;">
+                    <button id="fetchArticlesBtn" style="padding: 8px 15px; font-size: 13px; background: #667eea; color: white; border: none; border-radius: 6px; cursor: pointer; width: 100%;">
+                        📋 获取该作者的所有文章
+                    </button>
+                </div>
+                <div id="articleListInfo" style="display: none;">
+                    <div>找到 <span id="articleCount">0</span> 篇文章</div>
+                    <div style="margin-top: 5px;">
+                        <button id="selectAllBtn" style="padding: 4px 8px; font-size: 11px; margin-right: 5px; background: #667eea; color: white; border: none; border-radius: 4px; cursor: pointer;">全选</button>
+                        <button id="selectNoneBtn" style="padding: 4px 8px; font-size: 11px; background: #6c757d; color: white; border: none; border-radius: 4px; cursor: pointer;">取消全选</button>
+                    </div>
+                </div>
+            </div>
+            <div id="articleList" style="max-height: 250px; overflow-y: auto; margin-bottom: 10px; border: 1px solid #ddd; border-radius: 6px; padding: 5px; display: none;">
+                <!-- 文章列表将在这里动态生成 -->
+            </div>
+            <div class="button-group">
+                <button id="batchDownloadBtn" disabled style="display: none;">批量下载选中文章 (<span id="selectedCount">0</span>)</button>
+            </div>
+            <div id="batchProgress" style="display: none; margin-top: 10px; padding: 10px; background: #f8f9fa; border-radius: 8px; font-size: 12px;">
+                <div>进度: <span id="progressText">0/0</span></div>
+                <div style="width: 100%; height: 8px; background: #e0e0e0; border-radius: 4px; margin-top: 5px; overflow: hidden;">
+                    <div id="progressBar" style="height: 100%; background: #667eea; width: 0%; transition: width 0.3s;"></div>
+                </div>
+                <div style="margin-top: 5px;">
+                    <button id="pauseBatchBtn" style="padding: 4px 8px; font-size: 11px; margin-right: 5px; background: #ffc107; color: white; border: none; border-radius: 4px; cursor: pointer;">暂停</button>
+                    <button id="cancelBatchBtn" style="padding: 4px 8px; font-size: 11px; background: #dc3545; color: white; border: none; border-radius: 4px; cursor: pointer;">取消</button>
+                </div>
+            </div>
+        </div>
+
+        <div id="loading" class="loading">
+            ⏳ 正在处理...
+        </div>
+
+        <div class="footer">
+            <p id="footerText">请确保在微信公众号文章页面使用</p>
+        </div>
+    </div>
+
+    <!-- 使用本地 html2pdf.js 库 -->
+    <script src="html2pdf.bundle.min.js"></script>
+    <script src="popup.js"></script>
+</body>
+</html>
