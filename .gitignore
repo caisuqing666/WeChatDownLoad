@@ -19,11 +19,12 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+MANIFEST
 
 # Virtual Environment
 venv/
-env/
 ENV/
+env/
 
 # IDE
 .vscode/
@@ -36,20 +37,14 @@ ENV/
 .DS_Store
 .AppleDouble
 .LSOverride
-._*
 
-# Downloads (用户下载的文件)
+# Downloads
 downloads/
 *.md.bak
 
 # Logs
 *.log
 
-# Chrome Extension (开发文件，保留核心文件)
+# Chrome Extension
 chrome_extension/icons/*.png
 !chrome_extension/icons/icon*.png
-
-# Test files
-test_*.py
-*_test.py
-
