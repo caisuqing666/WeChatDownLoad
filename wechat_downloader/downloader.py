@@ -171,6 +171,14 @@ class ArticleDownloader:
         Returns:
             Markdown格式的内容
         """
+        # 首先清理script和style标签（防止乱码）
+        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<style[^>]*>.*?</style>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        html = re.sub(r'<noscript[^>]*>.*?</noscript>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        
+        # 移除JavaScript代码块
+        html = re.sub(r'<script[^>]*>.*?</script>', '', html, flags=re.DOTALL | re.IGNORECASE)
+        
         # 提取标题
         title_match = re.search(r'<h[1-6][^>]*>(.*?)</h[1-6]>', html, re.IGNORECASE | re.DOTALL)
         
@@ -212,46 +220,110 @@ class ArticleDownloader:
         html = re.sub(r'<pre[^>]*><code[^>]*>(.*?)</code></pre>', r'```\n\1\n```', html, flags=re.DOTALL | re.IGNORECASE)
         html = re.sub(r'<code[^>]*>(.*?)</code>', r'`\1`', html, flags=re.DOTALL | re.IGNORECASE)
         
-        # 移除其他标签
+        # 移除其他标签（保留换行）
+        html = re.sub(r'<br\s*/?>', '\n', html, flags=re.IGNORECASE)
+        html = re.sub(r'<p[^>]*>', '\n', html, flags=re.IGNORECASE)
+        html = re.sub(r'</p>', '\n', html, flags=re.IGNORECASE)
+        html = re.sub(r'<div[^>]*>', '\n', html, flags=re.IGNORECASE)
+        html = re.sub(r'</div>', '\n', html, flags=re.IGNORECASE)
         html = re.sub(r'<[^>]+>', '', html)
         
-        # 清理空白
+        # 解码HTML实体
+        import html as html_module
+        html = html_module.unescape(html)
+        
+        # 清理空白和空行
         lines = [line.strip() for line in html.split('\n')]
-        lines = [line for line in lines if line]
+        lines = [line for line in lines if line and not line.startswith('var ') and not line.startswith('function')]
         
-        return '\n'.join(lines)
+        # 移除JavaScript代码残留和CSS样式
+        cleaned_lines = []
+        skip = False
+        in_script = False
+        in_style = False
+        
+        for line in lines:
+            # 跳过JavaScript代码块
+            if any(keyword in line for keyword in ['() =>', '=> {', 'function(', 'const ', 'var ', 'let ', 'document.', 'window.', 'navigator.', 'setTimeout', 'addEventListener']):
+                skip = True
+                continue
+            if skip and ('});' in line or line.strip() == '}' or line.strip().endswith(');')):
+                skip = False
+                continue
+            
+            # 跳过CSS样式代码
+            if '{--weui-' in line or '--weui-BG' in line or '--weui-FG' in line or '@media' in line:
+                continue
+            if '.wx-root' in line or '.weui-' in line or 'body,' in line:
+                continue
+            
+            # 跳过HTML标签残留
+            if line.strip().startswith('<') and line.strip().endswith('>'):
+                continue
+            
+            # 跳过过长的行（通常是压缩的CSS/JS）
+            if len(line) > 500:
+                continue
+            
+            # 跳过只有标点符号的行
+            if line.strip() in ['：', '，', '。', '&nbsp;', '']:
+                continue
+            
+            if not skip:
+                cleaned_lines.append(line)
+        
+        # 进一步清理：移除重复的空行
+        result = '\n'.join(cleaned_lines)
+        result = re.sub(r'\n{3,}', '\n\n', result)
+        
+        return result.strip()
     
-    def download_article(self, article_data: Dict, account_name: str = "") -> Optional[Path]:
+    def download_article(self, article_data: Dict, account_name: str = "", download_images: bool = False) -> Optional[Path]:
         """
-        下载单篇文章
-        
+        下载单篇文章（简化版）
+
         Args:
             article_data: 文章数据字典
             account_name: 公众号名称
-            
+            download_images: 是否下载图片
+
         Returns:
             保存的文件路径
         """
         title = article_data.get('title', '未命名文章')
         content = article_data.get('content', '')
         url = article_data.get('url', '')
-        
+
         # 清理文件名
-        safe_title = re.sub(r'[<>:"/\\|?*]', '_', title)
-        safe_title = safe_title[:100]  # 限制长度
-        
+        safe_title = re.sub(r'[<>:"/\\|?*]', '_', title)[:100]
+
         # 创建输出目录
-        if account_name:
-            output_path = self.output_dir / account_name
-        else:
-            output_path = self.output_dir
+        output_path = self.output_dir / account_name if account_name else self.output_dir
         output_path.mkdir(parents=True, exist_ok=True)
-        
+
         # 转换为Markdown
         markdown_content = self.html_to_markdown(content, url)
-        
-        # 添加元数据
-        metadata = f"""---
+
+        # 下载图片（可选）
+        if download_images:
+            images = self.extract_images(content)
+            if images:
+                img_dir = output_path / f"{safe_title}_images"
+                img_dir.mkdir(exist_ok=True)
+
+                for idx, img_url in enumerate(images[:20]):
+                    try:
+                        ext = os.path.splitext(urlparse(img_url).path)[1] or '.jpg'
+                        img_file = img_dir / f"image_{idx+1}{ext}"
+                        if self.download_file(img_url, img_file):
+                            markdown_content = markdown_content.replace(
+                                img_url, f"{safe_title}_images/image_{idx+1}{ext}"
+                            )
+                    except:
+                        pass
+
+        # 生成最终内容
+        final_content = f"""---
 title: {title}
 author: {article_data.get('author', '')}
 url: {url}
@@ -260,44 +332,14 @@ publish_time: {article_data.get('publish_time', 0)}
 
 {markdown_content}
 """
-        
-        # 保存Markdown文件
+
+        # 保存文件
         md_file = output_path / f"{safe_title}.md"
         with open(md_file, 'w', encoding='utf-8') as f:
-            f.write(metadata)
-        
-        # 下载图片
-        images = self.extract_images(content)
-        if images:
-            img_dir = output_path / f"{safe_title}_images"
-            img_dir.mkdir(exist_ok=True)
-            
-            for idx, img_url in enumerate(images[:20]):  # 限制下载数量
-                try:
-                    ext = os.path.splitext(urlparse(img_url).path)[1] or '.jpg'
-                    img_file = img_dir / f"image_{idx+1}{ext}"
-                    if self.download_file(img_url, img_file):
-                        # 更新Markdown中的图片路径
-                        markdown_content = markdown_content.replace(
-                            img_url, f"{safe_title}_images/image_{idx+1}{ext}"
-                        )
-                except Exception as e:
-                    print(f"下载图片失败: {e}")
-        
-        # 更新Markdown文件
-        metadata = f"""---
-title: {title}
-author: {article_data.get('author', '')}
-url: {url}
-publish_time: {article_data.get('publish_time', 0)}
----
+            f.write(final_content)
 
-{markdown_content}
-"""
-        with open(md_file, 'w', encoding='utf-8') as f:
-            f.write(metadata)
-        
         return md_file
+
 
 
 

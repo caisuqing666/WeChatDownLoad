@@ -3,7 +3,6 @@
 """
 import sys
 import argparse
-from pathlib import Path
 from typing import Optional
 from .api import WeChatAPI
 from .downloader import ArticleDownloader
@@ -30,15 +29,18 @@ def get_token_from_clipboard() -> Optional[str]:
 def main():
     """主函数"""
     parser = argparse.ArgumentParser(
-        description='微信公众号文章批量下载工具',
+        description='微信公众号文章批量下载工具（默认无需token）',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
-  # 下载单篇文章
-  python -m wechat_downloader.main --url "https://mp.weixin.qq.com/s/xxx" --token "your_token"
+  # 下载单篇文章（无需token）
+  python -m wechat_downloader.main --url "https://mp.weixin.qq.com/s/xxx"
   
-  # 批量下载公众号文章
-  python -m wechat_downloader.main --url "https://mp.weixin.qq.com/s/xxx" --token "your_token" --batch --count 10
+  # 批量下载公众号文章（无需token）
+  python -m wechat_downloader.main --url "https://mp.weixin.qq.com/s/xxx" --batch --count 10
+  
+  # 也可以提供token，优先使用接口方式
+  python -m wechat_downloader.main --url "https://mp.weixin.qq.com/s/xxx" --token "your_token" --batch
   
   # 从剪贴板获取token
   python -m wechat_downloader.main --url "https://mp.weixin.qq.com/s/xxx" --token-clipboard
@@ -55,20 +57,18 @@ def main():
     
     args = parser.parse_args()
     
-    # 获取token
+    # 获取token（可选）
     token = args.token
     if args.token_clipboard:
-        token = get_token_from_clipboard()
-        if not token:
-            print("错误: 无法从剪贴板读取token")
-            sys.exit(1)
-    
-    if not token:
-        print("错误: 需要提供token")
-        print("提示: 在微信中打开文章链接，从浏览器开发者工具中获取token")
-        print("      或者使用 --token-clipboard 从剪贴板读取")
-        sys.exit(1)
-    
+        clipboard_token = get_token_from_clipboard()
+        if clipboard_token:
+            token = clipboard_token
+        else:
+            print("⚠️ 警告: 无法从剪贴板读取token，将继续使用无需token模式")
+
+    if not token and args.batch:
+        print("提示: 未提供token，将使用网页解析模式获取文章列表")
+
     # 初始化API和下载器
     api = WeChatAPI(token=token)
     downloader = ArticleDownloader(output_dir=args.output)
@@ -83,56 +83,63 @@ def main():
     print(f"公众号: {account_info['account_name']}")
     print(f"公众号ID: {account_info['biz_id']}")
     
+    def download_and_save(article_url: str):
+        """下载文章并保存到磁盘"""
+        article_data = api.get_article_content(article_url)
+        if not article_data:
+            return None
+        return downloader.download_article(
+            article_data,
+            account_name=account_info['account_name']
+        )
+    
     if args.batch:
         # 批量下载
-        print(f"\n开始批量下载，数量: {args.count}...")
-        articles = api.get_article_list(
-            account_info['biz_id'],
-            offset=args.offset,
-            count=args.count
-        )
+        total = max(args.count, 0)
+        print(f"\n开始批量下载，数量: {total}...")
+        articles = []
+        
+        if token:
+            articles = api.get_article_list(
+                account_info['biz_id'],
+                offset=max(args.offset, 0),
+                count=total or 10
+            )
+            if not articles:
+                print("⚠️ 提示: token接口获取文章列表失败，尝试网页解析模式...")
         
         if not articles:
-            print("错误: 无法获取文章列表，请检查token是否有效")
+            simple_limit = max(total + max(args.offset, 0), total or 1)
+            articles = api.get_article_list_simple(args.url, max_count=simple_limit or 1)
+            start = max(args.offset, 0)
+            if start:
+                articles = articles[start:]
+            if total:
+                articles = articles[:total]
+        
+        if not articles:
+            print("错误: 无法获取文章列表")
             sys.exit(1)
         
         print(f"找到 {len(articles)} 篇文章")
         
         for idx, article in enumerate(articles, 1):
             print(f"\n[{idx}/{len(articles)}] 正在下载: {article['title']}")
-            
-            # 获取文章详细内容
-            article_data = api.get_article_content(article['link'])
-            if article_data:
-                file_path = downloader.download_article(
-                    article_data,
-                    account_name=account_info['account_name']
-                )
-                if file_path:
-                    print(f"✓ 已保存: {file_path}")
-                else:
-                    print("✗ 下载失败")
+            file_path = download_and_save(article['link'])
+            if file_path:
+                print(f"✓ 已保存: {file_path}")
             else:
                 print("✗ 无法获取文章内容")
     else:
         # 下载单篇文章
         print("\n正在下载文章...")
-        article_data = api.get_article_content(args.url)
+        file_path = download_and_save(args.url)
         
-        if not article_data:
+        if not file_path:
             print("错误: 无法获取文章内容")
             sys.exit(1)
         
-        print(f"标题: {article_data['title']}")
-        file_path = downloader.download_article(
-            article_data,
-            account_name=account_info['account_name']
-        )
-        
-        if file_path:
-            print(f"\n✓ 下载完成: {file_path}")
-        else:
-            print("\n✗ 下载失败")
+        print(f"\n✓ 下载完成: {file_path}")
 
 
 if __name__ == '__main__':

@@ -130,3 +130,4 @@ file /path/to/wechatDownload.app/Contents/MacOS/*
 
 
 
+

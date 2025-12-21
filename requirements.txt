@@ -1,5 +1,8 @@
 requests>=2.31.0
 pyperclip>=1.8.2; platform_system != "Linux"
+markdown>=3.4.0
+weasyprint>=60.0; platform_system != "Linux"
+PyPDF2>=3.0.0
 
 
 

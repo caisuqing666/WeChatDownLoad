@@ -79,21 +79,108 @@ class WeChatAPI:
             print(f"获取公众号信息失败: {e}")
             return None
     
+    def get_article_list_simple(self, article_url: str, max_count: int = 20) -> List[Dict]:
+        """
+        无需token，通过网页解析获取文章列表（简化版）
+
+        Args:
+            article_url: 任意一篇文章URL（用于获取公众号信息）
+            max_count: 最大获取数量
+
+        Returns:
+            文章列表
+        """
+        biz_id = self.extract_biz_id(article_url)
+        if not biz_id:
+            print("无法提取公众号ID")
+            return []
+
+        # 访问公众号主页
+        profile_url = f"{self.BASE_URL}/mp/profile_ext?action=home&__biz={biz_id}"
+
+        try:
+            response = self.session.get(profile_url, timeout=15)
+            response.raise_for_status()
+            html = response.text
+
+            # 从HTML中提取文章链接
+            articles = []
+            found_urls = set()
+
+            # 方法1: 提取所有/s/链接
+            url_pattern = r'https?://mp\.weixin\.qq\.com/s/[a-zA-Z0-9_-]+'
+            urls = re.findall(url_pattern, html)
+
+            for url in urls:
+                base_url = url.split('?')[0]
+                if base_url not in found_urls and len(articles) < max_count:
+                    found_urls.add(base_url)
+
+                    # 添加biz参数
+                    full_url = f"{base_url}?__biz={biz_id}" if '?' not in url else url
+
+                    articles.append({
+                        'title': f'文章 {len(articles) + 1}',
+                        'link': full_url,
+                        'author': ''
+                    })
+
+            # 方法2: 尝试提取标题（可选）
+            try:
+                # 匹配文章数据结构
+                data_pattern = r'"content_url":"([^"]+)"[^}]*"title":"([^"]+)"'
+                matches = re.findall(data_pattern, html)
+
+                for idx, (url, title) in enumerate(matches):
+                    if len(articles) >= max_count:
+                        break
+                    url = url.replace('\\/', '/')
+                    base_url = url.split('?')[0] if '?' in url else url
+
+                    if base_url not in found_urls:
+                        found_urls.add(base_url)
+                        full_url = f"{base_url}?__biz={biz_id}" if '?' not in url else url
+
+                        # 解码title
+                        try:
+                            title = title.encode('utf-8').decode('unicode_escape')
+                        except:
+                            pass
+
+                        if idx < len(articles):
+                            articles[idx]['title'] = title
+                        else:
+                            articles.append({
+                                'title': title,
+                                'link': full_url,
+                                'author': ''
+                            })
+            except Exception as e:
+                print(f"提取标题失败: {e}")
+
+            print(f"从网页中找到 {len(articles)} 篇文章")
+            return articles
+
+        except Exception as e:
+            print(f"获取文章列表失败: {e}")
+            return []
+
     def get_article_list(self, biz_id: str, offset: int = 0, count: int = 10) -> List[Dict]:
         """
-        获取公众号文章列表
-        
+        获取公众号文章列表（需要token的旧方法，保留向后兼容）
+
         Args:
             biz_id: 公众号ID
             offset: 偏移量
             count: 每页数量
-            
+
         Returns:
             文章列表
         """
         if not self.token:
-            raise ValueError("需要提供token才能获取文章列表")
-        
+            print("⚠️ 提示: 使用get_article_list_simple()方法可以无需token获取文章列表")
+            return []
+
         url = f"{self.BASE_URL}/mp/profile_ext"
         params = {
             'action': 'getmsg',
@@ -110,18 +197,18 @@ class WeChatAPI:
             'x5': 0,
             'f': 'json'
         }
-        
+
         try:
             response = self.session.get(url, params=params, timeout=15)
             response.raise_for_status()
             data = response.json()
-            
+
             if data.get('ret') == 0:
                 articles = []
                 msg_list = data.get('general_msg_list', '{}')
                 if isinstance(msg_list, str):
                     msg_list = json.loads(msg_list)
-                
+
                 for item in msg_list.get('list', []):
                     app_msg = item.get('app_msg_ext_info', {})
                     if app_msg:
@@ -133,7 +220,7 @@ class WeChatAPI:
                             'create_time': app_msg.get('create_time', 0),
                             'author': app_msg.get('author', ''),
                         })
-                    
+
                     # 处理多图文消息
                     for sub_item in app_msg.get('multi_app_msg_item_list', []):
                         articles.append({
@@ -144,7 +231,7 @@ class WeChatAPI:
                             'create_time': sub_item.get('create_time', 0),
                             'author': sub_item.get('author', ''),
                         })
-                
+
                 return articles
             else:
                 print(f"获取文章列表失败: {data.get('errmsg', '未知错误')}")
@@ -175,42 +262,93 @@ class WeChatAPI:
             # 提取文章内容 - 尝试多种方式
             content = None
             
-            # 方式1: 从变量中提取
-            content_match = re.search(r'var\s+msg_content\s*=\s*"([^"]+)"', html)
+            # 方式1: 从HTML中提取js_content区域（最可靠）
+            # 匹配 <div id="js_content" ...>...</div>，需要找到对应的结束标签
+            js_content_pattern = r'<div[^>]*id=["\']js_content["\'][^>]*>(.*?)</div>\s*(?=<script|<style|</body>|$)'
+            content_match = re.search(js_content_pattern, html, re.DOTALL | re.IGNORECASE)
             if content_match:
                 content = content_match.group(1)
-                # 解码HTML实体
-                content = content.replace('\\"', '"').replace('\\/', '/')
-                # 处理Unicode转义
-                try:
-                    content = content.encode('utf-8').decode('unicode_escape')
-                except:
-                    pass
+                # 清理script和style标签
+                content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
+                content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL | re.IGNORECASE)
             
-            # 方式2: 从HTML中提取内容区域
+            # 方式2: 尝试从rich_media_content类提取
             if not content:
-                content_match = re.search(r'id="js_content"[^>]*>(.*?)</div>', html, re.DOTALL)
+                rich_content_pattern = r'<div[^>]*class=["\'][^"\']*rich_media_content[^"\']*["\'][^>]*>(.*?)</div>\s*(?=<script|<style|</body>|$)'
+                content_match = re.search(rich_content_pattern, html, re.DOTALL | re.IGNORECASE)
                 if content_match:
                     content = content_match.group(1)
+                    content = re.sub(r'<script[^>]*>.*?</script>', '', content, flags=re.DOTALL | re.IGNORECASE)
+                    content = re.sub(r'<style[^>]*>.*?</style>', '', content, flags=re.DOTALL | re.IGNORECASE)
             
-            # 方式3: 使用整个HTML作为后备
+            # 方式3: 从JavaScript变量中提取（作为后备）
             if not content:
-                content = html
+                content_match = re.search(r'var\s+msg_content\s*=\s*"([^"]+)"', html)
+                if content_match:
+                    content = content_match.group(1)
+                    # 解码HTML实体
+                    content = content.replace('\\"', '"').replace('\\/', '/').replace('\\n', '\n')
+                    # 处理Unicode转义
+                    try:
+                        content = content.encode('utf-8').decode('unicode_escape')
+                    except:
+                        pass
             
-            # 提取标题
+            # 如果仍然没有内容，尝试更宽松的提取方式
+            if not content or len(content.strip()) < 50:
+                # 尝试提取body标签内的所有文本内容（最后手段）
+                body_match = re.search(r'<body[^>]*>(.*?)</body>', html, re.DOTALL | re.IGNORECASE)
+                if body_match:
+                    body_content = body_match.group(1)
+                    # 移除所有script和style标签
+                    body_content = re.sub(r'<script[^>]*>.*?</script>', '', body_content, flags=re.DOTALL | re.IGNORECASE)
+                    body_content = re.sub(r'<style[^>]*>.*?</style>', '', body_content, flags=re.DOTALL | re.IGNORECASE)
+                    # 尝试找到包含中文的段落
+                    chinese_paragraphs = re.findall(r'<p[^>]*>([^<]*[\u4e00-\u9fa5]+[^<]*)</p>', body_content, re.IGNORECASE)
+                    if chinese_paragraphs:
+                        content = '\n'.join(chinese_paragraphs[:50])  # 最多取50段
+                
+                if not content or len(content.strip()) < 50:
+                    print("⚠️  警告: 无法提取文章正文内容，可能遇到反爬虫限制")
+                    content = ""
+            
+            # 提取标题 - 多种方法
             title = "未知标题"
+            
+            # 方法1: 从JavaScript变量中提取
             title_match = re.search(r'var\s+msg_title\s*=\s*"([^"]+)"', html)
             if title_match:
-                title = title_match.group(1).replace('\\"', '"')
+                title = title_match.group(1).replace('\\"', '"').replace('\\/', '/')
                 try:
                     title = title.encode('utf-8').decode('unicode_escape')
                 except:
                     pass
-            else:
-                # 尝试从HTML标题标签提取
+            
+            # 方法2: 从HTML标题标签提取
+            if title == "未知标题":
                 title_match = re.search(r'<h1[^>]*class="rich_media_title"[^>]*>(.*?)</h1>', html, re.DOTALL)
                 if title_match:
                     title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
+            
+            # 方法3: 从activity-name ID提取
+            if title == "未知标题":
+                title_match = re.search(r'<h1[^>]*id="activity-name"[^>]*>(.*?)</h1>', html, re.DOTALL)
+                if title_match:
+                    title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
+            
+            # 方法4: 从页面title标签提取
+            if title == "未知标题":
+                title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.DOTALL)
+                if title_match:
+                    title = re.sub(r'<[^>]+>', '', title_match.group(1)).strip()
+                    # 清理title中的额外信息
+                    title = title.split('|')[0].split('-')[0].strip()
+            
+            # 方法5: 从meta标签提取
+            if title == "未知标题":
+                title_match = re.search(r'<meta[^>]*property="og:title"[^>]*content="([^"]+)"', html)
+                if title_match:
+                    title = title_match.group(1).strip()
             
             # 提取作者
             author = ""
