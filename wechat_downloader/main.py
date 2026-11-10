@@ -38,6 +38,8 @@ def download_many(downloader: ArticleDownloader, urls: List[str], interval: floa
             failed += 1
         else:
             print(f"{prefix}✓ {result.article.title}\n    → {result.path}")
+            if result.failed_images:
+                print(f"    ! {len(result.failed_images)} 张图片下载失败，已保留原始链接")
         if index < len(urls) and interval > 0:
             time.sleep(interval)
     return failed
@@ -45,7 +47,7 @@ def download_many(downloader: ArticleDownloader, urls: List[str], interval: floa
 
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
-        description='微信公众号文章下载工具：把文章保存为 Markdown（图片保留原始链接，不下载到本地）',
+        description='微信公众号文章下载工具：把文章保存为 Markdown，图片下载到本地',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
@@ -62,6 +64,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument('urls', nargs='*', metavar='URL', help='文章链接，可传多个')
     parser.add_argument('--url', '-u', action='append', default=[], help='文章链接（可重复，兼容旧用法）')
     parser.add_argument('--output', '-o', default='downloads', help='输出目录（默认: downloads）')
+    parser.add_argument('--no-images', action='store_true', help='不下载图片，Markdown 里保留微信原始图片链接')
     parser.add_argument('--interval', type=float, default=2.0, help='多篇下载之间的间隔秒数（默认: 2）')
     parser.add_argument('--token', '-t', help='历史文章接口 token（仅 --batch 使用）')
     parser.add_argument('--token-clipboard', action='store_true', help='从剪贴板读取token')
@@ -74,7 +77,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     if not urls:
         parser.error("请至少提供一个文章链接")
 
-    downloader = ArticleDownloader(output_dir=args.output)
+    downloader = ArticleDownloader(output_dir=args.output, download_images=not args.no_images)
 
     if not args.batch:
         failed = download_many(downloader, urls, args.interval)

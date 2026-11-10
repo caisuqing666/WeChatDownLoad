@@ -8,7 +8,7 @@
 
 ## Python 命令行版：下载文章为 Markdown
 
-把公众号文章保存为带 front matter 的 Markdown。图片保留微信原始链接（联网时可显示），不下载到本地。
+把公众号文章保存为 Markdown，文件开头是 YAML front matter（title、author、url、date 等）。图片下载到本地，Markdown 里用相对路径引用；加 `--no-images` 则保留微信原始图片链接。
 
 ```bash
 pip install -r requirements.txt
@@ -20,11 +20,11 @@ python -m wechat_downloader.main "https://mp.weixin.qq.com/s/xxx"
 python -m wechat_downloader.main URL1 URL2 URL3 -o ~/Documents/公众号
 ```
 
-输出位置：`<输出目录>/<公众号名称>/<发布日期>_<标题>.md`。
+输出位置：`<输出目录>/<公众号名称>/<发布日期>_<标题>.md`，图片在同目录的 `<发布日期>_<标题>.assets/` 里。单张图片下载失败时保留原始链接并提示。
 
-遇到“环境异常”验证页时程序会停止后续请求；稍等一段时间，或在浏览器里打开该链接完成验证后再试。图片/视频分享类消息暂不支持。
+遇到“环境异常”验证页时程序会停止后续请求；稍等一段时间，或在浏览器里打开该链接完成验证后再试。长链接缺少 `chksm` 等参数时微信可能返回“未知错误”页，请复制完整链接或改用 /s/ 短链接。图片/视频分享类消息暂不支持。
 
-运行测试：`pip install pytest && python -m pytest tests`
+运行测试：`pip install pytest && python -m pytest tests`。`tests/fixtures/real/` 是真实抓取的文章页面（用 `tests/fixtures/trim_page.py` 去掉了无关的内联 JS/CSS），解析逻辑可以离线测试。
 
 # 微信公众号文章批量下载工具
 
