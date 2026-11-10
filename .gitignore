@@ -7,7 +7,6 @@ __pycache__/
 build/
 develop-eggs/
 dist/
-downloads/
 eggs/
 .eggs/
 lib/
@@ -38,7 +37,7 @@ env/
 .AppleDouble
 .LSOverride
 
-# Downloads
+# 命令行默认输出目录（-o 未指定时）
 downloads/
 *.md.bak
 
