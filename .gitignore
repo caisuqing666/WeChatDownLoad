@@ -47,3 +47,6 @@ downloads/
 # Chrome Extension
 chrome_extension/icons/*.png
 !chrome_extension/icons/icon*.png
+
+# 扩展测试依赖
+node_modules/

@@ -68,15 +68,17 @@ const WeChatMarkdown = (() => {
             case 'PRE': {
                 // 微信代码块每行是一个 <code>：<pre><code>第1行</code><code>第2行</code></pre>
                 const codes = Array.from(node.querySelectorAll('code'));
-                const first = codes[0];
-                const lang = (node.getAttribute('data-lang') || '').trim()
-                    || (first ? ((first.className.match(/language-(\S+)/) || [])[1] || '') : '');
+                const lang = (node.getAttribute('data-lang') || '').trim();
+                // 换行规则与 parse.py 的 _flatten_code_blocks 一致：<br> 一律视为换行；
+                // 逐行格式里空行写成 <code><br></code>，行尾的 <br> 只是占位，去掉一个
+                const blocks = codes.length ? codes : [node];
                 const lineText = el => {
                     const copy = el.cloneNode(true);
-                    copy.querySelectorAll('br').forEach(br => br.replaceWith(codes.length > 1 ? '' : '\n'));
-                    return copy.textContent;
+                    copy.querySelectorAll('br').forEach(br => br.replaceWith('\n'));
+                    const line = copy.textContent;
+                    return blocks.length > 1 && line.endsWith('\n') ? line.slice(0, -1) : line;
                 };
-                const body = codes.length ? codes.map(lineText).join('\n') : lineText(node);
+                const body = blocks.map(lineText).join('\n');
                 return `\n\n\`\`\`${lang}\n${body.replace(/\n+$/, '')}\n\`\`\`\n\n`;
             }
             case 'A': {
@@ -158,3 +160,7 @@ const WeChatMarkdown = (() => {
 
     return { htmlToMarkdown, render, filename, safeFilename };
 })();
+
+if (typeof module !== 'undefined') {
+    module.exports = WeChatMarkdown;
+}

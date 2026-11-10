@@ -121,6 +121,12 @@ python -m pytest tests
 
 `tests/fixtures/real/` 是真实抓取的文章页面（用 `tests/fixtures/trim_page.py` 去掉了无关的内联 JS/CSS），解析逻辑可以离线测试。`tests/fixtures/album/` 是真实的合集接口响应（看理想 96 篇完整 6 页、RWKV 31 篇、津房字的次条文章游标、空列表和 ret=10004）。
 
+浏览器扩展的 Markdown 转换有单独的 Node 测试（需要 Node 18+）：
+
+```bash
+cd tests/extension && npm install && npm test
+```
+
 ## 来源
 
 本仓库最初基于 [qiye45/wechatDownload](https://github.com/qiye45/wechatDownload) 的思路，现已重写为只做 Markdown 导出的命令行和浏览器扩展，与原项目的桌面软件无关。
