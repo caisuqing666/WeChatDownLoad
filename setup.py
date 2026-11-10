@@ -3,17 +3,17 @@
 """
 from setuptools import setup, find_packages
 
-with open("README_NEW.md", "r", encoding="utf-8") as fh:
+with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 setup(
     name="wechat-downloader",
     version="1.0.0",
-    author="WeChat Downloader",
+    author="CAI SUQING",
     description="简洁的微信公众号文章下载工具",
     long_description=long_description,
     long_description_content_type="text/markdown",
-    url="https://github.com/qiye45/wechatDownload",
+    url="https://github.com/caisuqing666/WeChatDownLoad",
     packages=find_packages(),
     classifiers=[
         "Development Status :: 4 - Beta",
