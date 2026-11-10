@@ -40,23 +40,27 @@ def safe_filename(name: str, max_length: int = 80, max_bytes: int = 150) -> str:
 def article_id(article: Article) -> str:
     """
     8 位稳定标识：同一篇文章总是相同，不同文章即使同号同日同标题也不同。
-    优先用页面变量里的 biz+mid+idx（不受 msg_link 写法影响），取不到时依次退回
-    链接里的 __biz/mid/idx 参数、短链接 /s/ 后的短码、整个链接。
+    biz、mid、idx 逐个字段取值：先页面变量，再 msg_link 和请求链接里的参数，idx 最后才默认 1；
+    biz 或 mid 都取不到时退回短链接 /s/ 后的短码，最后退回整个链接。
     """
-    if article.biz and article.mid:
-        key = f"{article.biz}:{article.mid}:{article.idx or '1'}"
+    queries = [parse_qs(urlsplit(url).query) for url in (article.url, article.request_url) if url]
+
+    def from_links(name: str) -> str:
+        return next((q[name][0] for q in queries if q.get(name, [""])[0]), "")
+
+    biz = article.biz or from_links("__biz")
+    mid = article.mid or from_links("mid")
+    idx = article.idx or from_links("idx") or "1"
+    if biz and mid:
+        key = f"{biz}:{mid}:{idx}"
     else:
-        parts = urlsplit(article.url)
-        query = parse_qs(parts.query)
-        biz = query.get("__biz", [""])[0] or article.biz
-        mid, idx = query.get("mid", [""])[0], query.get("idx", ["1"])[0]
-        if biz and mid:
-            key = f"{biz}:{mid}:{idx}"
-        elif parts.path.startswith("/s/") and parts.path.strip("/") != "s":
-            key = parts.path[len("/s/"):].strip("/")
-        else:
-            key = article.url
+        key = next((_short_code(url) for url in (article.url, article.request_url) if _short_code(url)), article.url)
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+
+
+def _short_code(url: str) -> str:
+    path = urlsplit(url).path
+    return path[len("/s/"):].strip("/") if path.startswith("/s/") else ""
 
 
 def _url_key(url: str) -> str:
@@ -129,20 +133,33 @@ class ArticleDownloader:
         kept: List[str] = []
         new_assets: Optional[Path] = None
         md_tmp: Optional[Path] = None
+        assets = folder / assets_name
+        backup: Optional[Path] = None
+        installed = False
         try:
             if download_images and article.images:
                 new_assets = Path(tempfile.mkdtemp(dir=folder, prefix=f".{assets_name}."))
-                local, failed, kept = self._save_images(article.images, new_assets, folder / assets_name, assets_name)
+                local, failed, kept = self._save_images(article.images, new_assets, assets, assets_name)
                 article = dataclasses.replace(article, content_html=_replace_image_src(article.content_html, local))
             fd, tmp_name = tempfile.mkstemp(dir=folder, prefix=f".{stem}.", suffix=".md.tmp")
             md_tmp = Path(tmp_name)
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(render_markdown(article))
             if new_assets is not None:
-                _replace_dir(new_assets, folder / assets_name)
+                backup = _move_aside(assets)
+                os.replace(new_assets, assets)
                 new_assets = None
+                installed = True
             os.replace(md_tmp, md_path)
             md_tmp = None
+        except BaseException as error:
+            if installed or backup is not None:
+                _rollback(assets, backup, installed, error)
+            raise
+        else:
+            # 只有 .md 也替换成功后，旧图片才可以删
+            if backup is not None:
+                shutil.rmtree(backup, ignore_errors=True)
         finally:
             if new_assets is not None:
                 shutil.rmtree(new_assets, ignore_errors=True)
@@ -199,20 +216,37 @@ class ArticleDownloader:
         return self.save(article, download_images=download_images).path
 
 
-def _replace_dir(new: Path, dest: Path) -> None:
-    """目录不能直接 os.replace 覆盖非空目录：先把旧目录挪开，换上新目录后再删旧的"""
-    if not dest.exists():
-        os.replace(new, dest)
-        return
-    backup = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}.old."))
-    os.replace(dest, backup / dest.name)
+class RollbackError(WeChatError):
+    """保存失败后没能恢复旧结果；旧图片目录保留在备份位置，需要手动处理"""
+
+
+def _move_aside(path: Path) -> Optional[Path]:
+    """把已有目录挪进同级隐藏的备份目录并返回备份目录；原目录不存在时返回 None"""
+    if not path.exists():
+        return None
+    holder = Path(tempfile.mkdtemp(dir=path.parent, prefix=f".{path.name}.old."))
     try:
-        os.replace(new, dest)
+        os.replace(path, holder / path.name)
     except BaseException:
-        os.replace(backup / dest.name, dest)
+        holder.rmdir()
         raise
-    finally:
-        shutil.rmtree(backup, ignore_errors=True)
+    return holder
+
+
+def _rollback(assets: Path, backup: Optional[Path], installed: bool, error: BaseException) -> None:
+    """撤掉已经换上的新图片目录，把备份挪回原处；任何一步失败都保留备份并明确报错"""
+    try:
+        if installed:
+            discarded = _move_aside(assets)
+            if discarded is not None:
+                shutil.rmtree(discarded, ignore_errors=True)
+        if backup is not None:
+            os.replace(backup / assets.name, assets)
+            backup.rmdir()
+    except BaseException as rollback_error:
+        kept = backup / assets.name if backup is not None else None
+        where = f"旧图片目录保留在 {kept}，请手动移回 {assets}" if kept else f"请检查 {assets}"
+        raise RollbackError(f"保存失败（{error!r}），回滚也失败（{rollback_error!r}）：{where}") from rollback_error
 
 
 def _replace_image_src(content_html: str, local: Dict[str, str]) -> str:

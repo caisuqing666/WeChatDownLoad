@@ -41,6 +41,7 @@ class Article:
     user_name: str = ""
     mid: str = ""
     idx: str = ""
+    request_url: str = ""
     publish_time: Optional[datetime] = None
     description: str = ""
     cover: str = ""
@@ -255,6 +256,7 @@ def parse_article(page: str, url: str) -> Article:
         user_name=extract_js_var(page, "user_name"),
         mid=_digits(page, "mid", "appmsgid"),
         idx=_digits(page, "idx", "itemidx"),
+        request_url=normalize_url(url),
         publish_time=_parse_time(page),
         description=extract_js_var(page, "msg_desc"),
         cover=_normalize_src(extract_js_var(page, "msg_cdn_url")),

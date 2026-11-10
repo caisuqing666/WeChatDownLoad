@@ -4,6 +4,7 @@
 from pathlib import Path
 
 import hashlib
+import os
 import re
 
 import pytest
@@ -12,7 +13,7 @@ import yaml
 import wechat_downloader.downloader as downloader_module
 from wechat_downloader import main as cli
 from wechat_downloader.api import WeChatAPI
-from wechat_downloader.downloader import ArticleDownloader, article_id
+from wechat_downloader.downloader import ArticleDownloader, RollbackError, article_id
 from wechat_downloader.fetch import VerificationRequired, WeChatError, check_article_page
 from wechat_downloader.parse import ParseError, extract_js_var, parse_article
 from wechat_downloader.render import render_markdown
@@ -457,3 +458,148 @@ def test_r2_real_pages_id_stable_when_msg_link_changes(name, mid):
     expected = hashlib.sha1(f"{original.biz}:{mid}:1".encode()).hexdigest()[:8]
     assert article_id(original) == expected
     assert article_id(parse_article(stripped, "https://mp.weixin.qq.com/s/xyz")) == expected
+
+
+# ---- PR #2 第三轮复核 ----
+
+REAL_REPLACE = os.replace
+
+
+def fail_replace_when(monkeypatch, predicate, exc=PermissionError("拒绝访问")):
+    """让满足条件的 os.replace 调用抛错，其余照常执行"""
+    def fake(src, dst):
+        if predicate(Path(src), Path(dst)):
+            raise exc
+        return REAL_REPLACE(src, dst)
+
+    monkeypatch.setattr(downloader_module.os, "replace", fake)
+
+
+def is_md_commit(src: Path, dst: Path) -> bool:
+    return dst.suffix == ".md"
+
+
+class ChangedBytesFetcher(FakeFetcher):
+    def get_image(self, url):
+        data, content_type = super().get_image(url)
+        return b"v2:" + data, content_type
+
+
+CHANGED_URLS_PAGE = make_page(
+    '<p><img data-src="https://mmbiz.qpic.cn/x/640"></p><p><img data-src="https://mmbiz.qpic.cn/y/640"></p>',
+    msg_link=long_link(500),
+)
+
+
+@pytest.mark.parametrize("second_fetcher", [
+    pytest.param(lambda: FakeFetcher(REDOWNLOAD_PAGE), id="same-images"),
+    pytest.param(lambda: ChangedBytesFetcher(REDOWNLOAD_PAGE), id="same-urls-new-bytes"),
+    pytest.param(lambda: FakeFetcher(CHANGED_URLS_PAGE), id="changed-urls"),
+    pytest.param(lambda: FakeFetcher(REDOWNLOAD_PAGE, broken_images=[IMAGE_B]), id="one-image-kept"),
+])
+def test_s1_md_replace_failure_rolls_back_assets(tmp_path, monkeypatch, second_fetcher):
+    ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    before = snapshot(tmp_path)
+    fail_replace_when(monkeypatch, is_md_commit)
+    with pytest.raises(PermissionError):
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=second_fetcher()).download(SHORT_URL)
+    assert snapshot(tmp_path) == before
+    assert no_temp_files(tmp_path)
+
+
+def test_s1_md_replace_failure_on_first_download_leaves_nothing(tmp_path, monkeypatch):
+    fail_replace_when(monkeypatch, is_md_commit)
+    with pytest.raises(PermissionError):
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+    assert no_temp_files(tmp_path)
+
+
+def test_s1_installing_new_assets_failure_restores_backup(tmp_path, monkeypatch):
+    ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    before = snapshot(tmp_path)
+    fail_replace_when(monkeypatch, lambda src, dst: dst.suffix == ".assets" and ".old." not in str(src))
+    with pytest.raises(PermissionError):
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    assert snapshot(tmp_path) == before
+    assert no_temp_files(tmp_path)
+
+
+def test_s1_rollback_failure_is_reported_and_keeps_backup(tmp_path, monkeypatch):
+    first = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    old_md = first.path.read_bytes()
+    old_assets = snapshot(first.path.with_suffix(".assets"))
+    fail_replace_when(
+        monkeypatch,
+        lambda src, dst: is_md_commit(src, dst) or (".old." in str(src) and dst.suffix == ".assets"),
+    )
+    with pytest.raises(RollbackError) as info:
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    backups = [p for p in first.path.parent.iterdir() if ".old." in p.name]
+    assert len(backups) == 1
+    kept = backups[0] / first.path.with_suffix(".assets").name
+    assert str(kept) in str(info.value)
+    assert snapshot(kept) == old_assets
+    assert first.path.read_bytes() == old_md
+
+
+def test_s1_successful_redownload_removes_backup(tmp_path):
+    ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    result = ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    assert all(data.startswith(b"v2:") for data in snapshot(result.path.with_suffix(".assets")).values())
+    assert no_temp_files(tmp_path)
+
+
+# S2) biz / mid / idx 逐字段回退：页面变量 -> 链接参数 -> idx 默认 1
+
+def page_with(js: str) -> str:
+    return make_page("<p>正文</p>", biz="", extra_js=js)
+
+
+def link(biz="MzI4NjAxNjY4Nw==", mid="2650239155", idx=None):
+    url = f"https://mp.weixin.qq.com/s?__biz={biz}&mid={mid}&sn=abc"
+    return url + (f"&idx={idx}" if idx else "")
+
+
+def expected_id(idx="1", biz="MzI4NjAxNjY4Nw==", mid="2650239155"):
+    return hashlib.sha1(f"{biz}:{mid}:{idx}".encode()).hexdigest()[:8]
+
+
+FULL_VARS = 'var biz = "MzI4NjAxNjY4Nw=="; var mid = "2650239155";'
+
+
+def test_s2_missing_page_idx_uses_link_idx():
+    page = page_with(FULL_VARS)
+    first = article_id(parse_article(page, link(idx="1")))
+    second = article_id(parse_article(page, link(idx="2")))
+    assert first != second
+    assert first == expected_id("1") and second == expected_id("2")
+
+
+def test_s2_idx_defaults_to_1_only_when_nowhere():
+    assert article_id(parse_article(page_with(FULL_VARS), link())) == expected_id("1")
+    assert article_id(parse_article(page_with(FULL_VARS), SHORT_URL)) == expected_id("1")
+
+
+def test_s2_page_idx_wins_over_link_idx():
+    page = page_with(FULL_VARS + ' var idx = "3";')
+    assert article_id(parse_article(page, link(idx="2"))) == expected_id("3")
+
+
+def test_s2_missing_page_mid_uses_link_mid():
+    page = page_with('var biz = "MzI4NjAxNjY4Nw=="; var idx = "2";')
+    a = article_id(parse_article(page, link(mid="111")))
+    b = article_id(parse_article(page, link(mid="222")))
+    assert a == expected_id("2", mid="111") and b == expected_id("2", mid="222")
+
+
+def test_s2_missing_page_biz_uses_link_biz():
+    page = page_with('var mid = "2650239155"; var idx = "2";')
+    a = article_id(parse_article(page, link(biz="AAA=")))
+    b = article_id(parse_article(page, link(biz="BBB=")))
+    assert a == expected_id("2", biz="AAA=") and b == expected_id("2", biz="BBB=")
+
+
+def test_s2_request_url_params_used_when_msg_link_is_short():
+    page = make_page("<p>正文</p>", biz="", msg_link="https://mp.weixin.qq.com/s/Short1", extra_js=FULL_VARS)
+    assert article_id(parse_article(page, link(idx="2"))) == expected_id("2")
