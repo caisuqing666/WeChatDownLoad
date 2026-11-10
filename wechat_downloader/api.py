@@ -3,10 +3,8 @@
 """
 import re
 import json
-import time
 import requests
 from typing import Dict, List, Optional
-from urllib.parse import urlparse, parse_qs
 
 from .fetch import Fetcher, WeChatError
 from .parse import parse_article
@@ -30,25 +28,6 @@ class WeChatAPI:
         self.session.headers.update({
             'User-Agent': 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
         })
-    
-    def extract_biz_id(self, article_url: str) -> Optional[str]:
-        """
-        从文章URL中提取公众号ID (__biz)
-        
-        Args:
-            article_url: 微信公众号文章链接
-            
-        Returns:
-            公众号ID，如果提取失败返回None
-        """
-        try:
-            parsed = urlparse(article_url)
-            params = parse_qs(parsed.query)
-            biz_id = params.get('__biz', [None])[0]
-            return biz_id
-        except Exception as e:
-            print(f"提取公众号ID失败: {e}")
-            return None
     
     def get_account_info(self, article_url: str) -> Optional[Dict]:
         """
@@ -82,9 +61,10 @@ class WeChatAPI:
         Returns:
             文章列表
         """
-        biz_id = self.extract_biz_id(article_url)
+        account = self.get_account_info(article_url)
+        biz_id = account['biz_id'] if account else ""
         if not biz_id:
-            print("无法提取公众号ID")
+            print("无法从文章页面读取公众号ID")
             return []
 
         # 访问公众号主页

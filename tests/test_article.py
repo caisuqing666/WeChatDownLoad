@@ -1,6 +1,7 @@
 from pathlib import Path
 
 import pytest
+import yaml
 
 from wechat_downloader.downloader import ArticleDownloader, markdown_path, safe_filename
 from wechat_downloader.fetch import (
@@ -14,6 +15,14 @@ from wechat_downloader.parse import ParseError, extract_js_var, parse_article
 from wechat_downloader.render import render_markdown
 
 FIXTURES = Path(__file__).parent / "fixtures"
+
+
+def split_front_matter(md):
+    assert md.startswith("---\n")
+    end = md.index("\n---\n", 4)
+    return yaml.safe_load(md[4:end]), md[end + 5:]
+
+
 SHORT_URL = "https://mp.weixin.qq.com/s/AbCdEf123"
 
 
@@ -89,21 +98,21 @@ def test_non_content_blocks_removed(article):
 
 def test_markdown_output(article):
     md = render_markdown(article)
-    assert md.startswith("---\ntitle: \"测试文章：\\\"引号\\\" 与 '单引号'\"\n")
+    meta, body = split_front_matter(md)
+    assert meta["title"] == "测试文章：\"引号\" 与 '单引号'"
     assert "\n# 测试文章：\"引号\" 与 '单引号'\n" in md
     assert "## 一、引言" in md
     assert "第一段，**加粗**文字。" in md
     assert "![](https://mmbiz.qpic.cn/mmbiz_png/abc/640?wx_fmt=png&from=appmsg)" in md
     assert "![示意图](https://mmbiz.qpic.cn/mmbiz_jpg/def/640?wx_fmt=jpeg)" in md
     assert '```python\ndef hello():\n    return "*not italic*"\n\nprint(hello())\n```' in md
-    assert "<" not in md.split("---", 2)[2].replace("<br>", "")
+    assert "<" not in body.replace("<br>", "")
 
 
 def test_front_matter_has_required_fields(article):
-    head = render_markdown(article).split("---", 2)[1]
-    keys = [line.split(":", 1)[0] for line in head.strip().splitlines()]
-    assert keys[:4] == ["title", "author", "url", "date"]
-    assert 'date: "2024-12-02T18:42:53+08:00"' in head
+    meta, _ = split_front_matter(render_markdown(article))
+    assert list(meta)[:4] == ["title", "author", "url", "date"]
+    assert meta["date"] == "2024-12-02T18:42:53+08:00"
 
 
 def test_download_without_images_keeps_remote_links(tmp_path, page):

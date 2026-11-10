@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, quote, urlsplit
 from bs4 import BeautifulSoup
 
 from .fetch import Fetcher, WeChatError
-from .parse import CHINA_TZ, Article, parse_article
+from .parse import CHINA_TZ, Article, ParseError, parse_article
 from .render import render_markdown
 
 _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
@@ -79,6 +79,8 @@ class ArticleDownloader:
     def save(self, article: Article, download_images: Optional[bool] = None) -> DownloadResult:
         if download_images is None:
             download_images = self.download_images
+        if not BeautifulSoup(article.content_html, "html.parser").get_text(strip=True) and not article.images:
+            raise ParseError("文章正文为空，未写入文件")
         folder = self.output_dir / safe_filename(article.account_name or "未知公众号")
         folder.mkdir(parents=True, exist_ok=True)
         stem = self.article_stem(article)
@@ -108,7 +110,7 @@ class ArticleDownloader:
         return local, failed
 
     def download_article(self, article_data: Dict, account_name: str = "",
-                         download_images: bool = False) -> Optional[Path]:
+                         download_images: Optional[bool] = None) -> Optional[Path]:
         """兼容旧接口：接收 WeChatAPI.get_article_content() 返回的字典"""
         publish_time = article_data.get("publish_time") or 0
         article = Article(

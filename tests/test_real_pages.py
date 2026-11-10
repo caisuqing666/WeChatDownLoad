@@ -13,6 +13,8 @@ from wechat_downloader.fetch import ArticleUnavailable, VerificationRequired, ch
 from wechat_downloader.parse import parse_article
 from wechat_downloader.render import render_markdown
 
+from test_article import split_front_matter
+
 REAL = Path(__file__).parent / "fixtures" / "real"
 # 故意不带任何参数，确保元数据只能来自页面变量
 BARE_URL = "https://mp.weixin.qq.com/s/fixture"
@@ -112,9 +114,11 @@ def test_real_images_come_from_data_src(real):
 def test_real_markdown_is_clean(real):
     _, article, expected = real
     md = render_markdown(article)
-    head, body = md.split("---", 2)[1:]
-    assert f'title: "{expected["title"]}"' in head
-    assert f'date: "{expected["date"]}"' in head
+    meta, body = split_front_matter(md)
+    assert meta["title"] == expected["title"]
+    assert meta["author"] == expected["author"]
+    assert meta["date"] == expected["date"]
+    assert meta["url"] == article.url
     assert f"\n# {expected['title']}\n" in body
     assert "<section" not in body and "<span" not in body and "<img" not in body
     assert "visibility" not in body
@@ -131,7 +135,7 @@ def test_real_download_localizes_all_images(tmp_path, real):
     result = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(page)).download(BARE_URL)
     assets = result.path.with_name(result.path.stem + ".assets")
     assert len(list(assets.iterdir())) == expected["images"]
-    body = result.path.read_text(encoding="utf-8").split("---", 2)[2]
+    _, body = split_front_matter(result.path.read_text(encoding="utf-8"))
     assert "mmbiz.qpic.cn" not in body
     links = BeautifulSoup(result.article.content_html, "html.parser").find_all("img")
     for img in links:

@@ -39,7 +39,9 @@ def download_many(downloader: ArticleDownloader, urls: List[str], interval: floa
         else:
             print(f"{prefix}✓ {result.article.title}\n    → {result.path}")
             if result.failed_images:
-                print(f"    ! {len(result.failed_images)} 张图片下载失败，已保留原始链接")
+                print(f"    ! {len(result.failed_images)} 张图片下载失败，已保留原始链接：")
+                for image_url in result.failed_images:
+                    print(f"      {image_url}")
         if index < len(urls) and interval > 0:
             time.sleep(interval)
     return failed

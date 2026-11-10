@@ -1,11 +1,11 @@
 """
 HTML 正文 -> Markdown
 """
-import json
 import re
 from datetime import datetime
 from typing import Optional
 
+import yaml
 from bs4 import BeautifulSoup
 from markdownify import MarkdownConverter
 
@@ -38,11 +38,6 @@ def html_to_markdown(content_html: str) -> str:
     return markdown.strip() + "\n"
 
 
-def _yaml_value(value) -> str:
-    # JSON 字符串是合法的 YAML 标量，可以安全处理冒号、引号、# 等字符
-    return json.dumps(value, ensure_ascii=False)
-
-
 def front_matter(article: Article) -> str:
     required = {
         "title": article.title,
@@ -59,9 +54,9 @@ def front_matter(article: Article) -> str:
         "cover": article.cover,
         "downloaded_at": datetime.now(tz=CHINA_TZ).isoformat(timespec="seconds"),
     }
-    lines = [f"{key}: {_yaml_value(value)}" for key, value in required.items()]
-    lines += [f"{key}: {_yaml_value(value)}" for key, value in optional.items() if value]
-    return "---\n" + "\n".join(lines) + "\n---\n"
+    fields = {**required, **{key: value for key, value in optional.items() if value}}
+    dumped = yaml.safe_dump(fields, allow_unicode=True, sort_keys=False, width=float("inf"))
+    return f"---\n{dumped}---\n"
 
 
 def render_markdown(article: Article) -> str:
