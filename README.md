@@ -38,6 +38,7 @@ python -m wechat_downloader.main --urls links.txt --delay 5 --jitter 3
 - 遇到“环境异常”验证页立即停止并提示剩余篇数，稍后再跑同一命令继续。
 - 单篇失败（文章已删除、网络错误等）记入进度文件后继续下一篇，结束时汇总列出；下次运行会重试失败的文章。
 - 有图片没下载成功的文章记为 `partial`（正文已保存，缺的图保留微信原始链接），汇总里单独列出。下次运行默认重新下载这些文章补齐缺图：这次又失败的图沿用上次的本地文件，已成功的图不会丢；全部补齐后变为 `done`。加 `--no-retry-images` 则把缺图文章当作已下载跳过。按文件名里的文章ID 识别已有文件时，Markdown 里还有远程图片链接的也按缺图处理。
+- 用 `--no-images` 下载的文章在进度里标记 `"images_skipped": true`：之后再用 `--no-images` 运行会跳过，不加 `--no-images` 运行时会重新下载并保存图片，完成后标记变为 `false`。旧版进度文件没有这个字段时，按 Markdown 里是否还有远程图片链接判断。
 - 全部完整成功退出码为 0；有失败、缺图或因验证页停止为 1；Ctrl+C 为 130。
 
 进度文件格式（键是规范化后的链接）：
@@ -46,8 +47,8 @@ python -m wechat_downloader.main --urls links.txt --delay 5 --jitter 3
 {
   "version": 1,
   "articles": {
-    "https://mp.weixin.qq.com/s/xxx": {"status": "done", "id": "52a063f7", "path": "某公众号/2024-12-02_标题_52a063f7.md", "title": "标题", "updated_at": "2026-11-10T19:00:00+08:00"},
-    "https://mp.weixin.qq.com/s/zzz": {"status": "partial", "id": "1f3c9a20", "path": "某公众号/2024-12-03_标题2_1f3c9a20.md", "title": "标题2", "missing_images": 1, "failed_images": ["https://mmbiz.qpic.cn/..."], "attempts": 1, "updated_at": "2026-11-10T19:00:03+08:00"},
+    "https://mp.weixin.qq.com/s/xxx": {"status": "done", "id": "52a063f7", "path": "某公众号/2024-12-02_标题_52a063f7.md", "title": "标题", "images_skipped": false, "updated_at": "2026-11-10T19:00:00+08:00"},
+    "https://mp.weixin.qq.com/s/zzz": {"status": "partial", "id": "1f3c9a20", "path": "某公众号/2024-12-03_标题2_1f3c9a20.md", "title": "标题2", "images_skipped": false, "missing_images": 1, "failed_images": ["https://mmbiz.qpic.cn/..."], "attempts": 1, "updated_at": "2026-11-10T19:00:03+08:00"},
     "https://mp.weixin.qq.com/s/yyy": {"status": "failed", "error": "文章不可用：该内容已被发布者删除", "attempts": 1, "updated_at": "2026-11-10T19:00:05+08:00"}
   }
 }

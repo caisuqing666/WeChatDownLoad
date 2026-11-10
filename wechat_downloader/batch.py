@@ -72,14 +72,29 @@ class Progress:
     def missing_images(self, url: str) -> List[str]:
         return list(self.articles.get(url, {}).get("failed_images", []))
 
+    def images_skipped(self, url: str) -> bool:
+        """
+        按 --no-images 下载、图片还是远程链接。旧版进度文件没有这个字段，
+        这时看 Markdown 里有没有远程图片链接来判断。
+        """
+        entry = self.articles.get(url, {})
+        if "images_skipped" in entry:
+            return bool(entry["images_skipped"])
+        path = self.saved_path(url, "done")
+        return path is not None and bool(remote_images(path))
+
     def mark_done(self, url: str, path: Path, article_id: str, title: str,
-                  failed_images: Optional[List[str]] = None) -> None:
-        """有图片没下载成功时记为 partial：正文已保存，但缺的图可以重下补齐"""
+                  failed_images: Optional[List[str]] = None, images_skipped: bool = False) -> None:
+        """
+        有图片没下载成功时记为 partial：正文已保存，但缺的图可以重下补齐。
+        images_skipped 表示有意没下载图片（--no-images），之后启用图片下载时会重新处理。
+        """
         entry = {
             "status": "partial" if failed_images else "done",
             "id": article_id,
             "path": path.relative_to(self.output_dir).as_posix(),
             "title": title,
+            "images_skipped": images_skipped,
             "updated_at": _now(),
         }
         if failed_images:
@@ -187,6 +202,8 @@ def download_url_list(downloader: ArticleDownloader, urls: List[str], delay: flo
                 continue
             if progress.status(url) == "partial":
                 print(f"{prefix}… 上次缺 {len(progress.missing_images(url))} 张图，重新下载")
+            elif progress.status(url) == "done" and progress.images_skipped(url):
+                print(f"{prefix}… 上次没有下载图片，这次重新下载并保存图片")
             if requested and (delay > 0 or jitter > 0):
                 sleep(delay + (uniform(0, jitter) if jitter > 0 else 0))
             requested = True
@@ -209,7 +226,8 @@ def download_url_list(downloader: ArticleDownloader, urls: List[str], delay: flo
             else:
                 print_result(prefix, saved)
                 progress.mark_done(url, saved.path, _id_from_stem(saved.path), saved.article.title,
-                                   saved.failed_images)
+                                   saved.failed_images,
+                                   images_skipped=not downloader.download_images and bool(saved.article.images))
                 result.downloaded += 1
                 if saved.failed_images:
                     result.partial.append((url, saved.path, list(saved.failed_images)))
@@ -221,23 +239,27 @@ def download_url_list(downloader: ArticleDownloader, urls: List[str], delay: flo
 
 def _skip_target(progress: Progress, output_dir: Path, url: str,
                  download_images: bool, retry_images: bool) -> Optional[Path]:
-    """返回可以跳过的已下载文件；缺图且要重试、失败过或没下载过的返回 None"""
-    if not retry_images:
-        existing = progress.saved_path(url, "done", "partial")
-        if existing is not None:
+    """
+    返回可以跳过的已下载文件；需要重新处理、失败过或没下载过的返回 None。
+    不下载图片时，已保存的文章都可以跳过；下载图片时，有意没下载图片的要重新处理，
+    缺图的按 retry_images 决定。
+    """
+    existing = progress.saved_path(url, "done", "partial")
+    if existing is not None:
+        if not download_images:
             return existing
-    else:
-        existing = progress.saved_path(url, "done")
-        if existing is not None:
-            return existing
-        if progress.saved_path(url, "partial") is not None:
-            return None
+        if progress.status(url) == "done":
+            return None if progress.images_skipped(url) else existing
+        return None if retry_images else existing
     existing = find_existing(output_dir, url)
     if existing is None:
         return None
-    missing = remote_images(existing) if download_images else []
-    progress.mark_done(url, existing, link_article_id(url), existing.stem, missing)
-    return None if missing and retry_images else existing
+    remote = remote_images(existing)
+    if not download_images:
+        progress.mark_done(url, existing, link_article_id(url), existing.stem, images_skipped=bool(remote))
+        return existing
+    progress.mark_done(url, existing, link_article_id(url), existing.stem, remote)
+    return None if remote and retry_images else existing
 
 
 def _id_from_stem(path: Path) -> str:

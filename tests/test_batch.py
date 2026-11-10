@@ -61,7 +61,8 @@ def pages(**overrides):
 def run(tmp_path, fetcher, urls=URLS, **kw):
     kw.setdefault("delay", 0)
     kw.setdefault("jitter", 0)
-    downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=fetcher)
+    download_images = kw.pop("download_images", True)
+    downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=fetcher, download_images=download_images)
     return download_url_list(downloader, urls, **kw)
 
 
@@ -487,3 +488,79 @@ def test_cli_summary_lists_partial_and_flag_disables_retry(tmp_path, monkeypatch
     assert cli.main(["--urls", str(links), "-o", str(out_dir)]) == 0
     assert fetcher.requests == IMG_URLS
     assert "缺图 0 篇" in capsys.readouterr().out
+
+
+# ---- --no-images 下载的文章：之后启用图片下载时重新处理 ----
+
+def test_no_images_then_default_run_downloads_images(tmp_path):
+    fetcher = ImageFetcher(image_pages())
+    result = run(tmp_path, fetcher, urls=IMG_URLS, download_images=False)
+    assert result.downloaded == 2 and fetcher.image_requests == []
+    for url in IMG_URLS:
+        entry = load_progress(tmp_path)["articles"][url]
+        assert entry["status"] == "done" and entry["images_skipped"] is True
+
+    fetcher = ImageFetcher({})
+    assert run(tmp_path, fetcher, urls=IMG_URLS, download_images=False).skipped == 2
+    assert fetcher.requests == [] and fetcher.image_requests == []
+
+    fetcher = ImageFetcher(image_pages())
+    result = run(tmp_path, fetcher, urls=IMG_URLS)
+    assert fetcher.requests == IMG_URLS and result.skipped == 0
+    assert fetcher.image_requests == [IMG_A, IMG_B, IMG_A, IMG_B]
+    for url in IMG_URLS:
+        entry = load_progress(tmp_path)["articles"][url]
+        assert entry["status"] == "done" and entry["images_skipped"] is False
+        assert "](https://" not in md_of(tmp_path, url).read_text(encoding="utf-8")
+
+    fetcher = ImageFetcher({})
+    assert run(tmp_path, fetcher, urls=IMG_URLS).skipped == 2 and fetcher.requests == []
+
+
+def test_no_images_article_without_images_is_complete(tmp_path):
+    run(tmp_path, MapFetcher(pages()), urls=URLS[:1], download_images=False)
+    assert load_progress(tmp_path)["articles"][URLS[0]]["images_skipped"] is False
+    fetcher = MapFetcher({})
+    assert run(tmp_path, fetcher, urls=URLS[:1]).skipped == 1 and fetcher.requests == []
+
+
+def test_no_images_file_without_progress_is_reprocessed_when_images_enabled(tmp_path):
+    run(tmp_path, ImageFetcher(image_pages()), urls=IMG_URLS[:1], download_images=False)
+    (tmp_path / PROGRESS_FILE).unlink()
+    fetcher = ImageFetcher({})
+    assert run(tmp_path, fetcher, urls=IMG_URLS[:1], download_images=False).skipped == 1
+    assert load_progress(tmp_path)["articles"][IMG_URLS[0]]["images_skipped"] is True
+    (tmp_path / PROGRESS_FILE).unlink()
+    fetcher = ImageFetcher(image_pages())
+    run(tmp_path, fetcher, urls=IMG_URLS[:1])
+    assert fetcher.image_requests == [IMG_A, IMG_B]
+    assert load_progress(tmp_path)["articles"][IMG_URLS[0]]["status"] == "done"
+
+
+@pytest.mark.parametrize("download_images_first, expect_refetch", [(False, True), (True, False)])
+def test_legacy_progress_without_flag(tmp_path, download_images_first, expect_refetch):
+    run(tmp_path, ImageFetcher(image_pages()), urls=IMG_URLS[1:], download_images=download_images_first)
+    data = load_progress(tmp_path)
+    for entry in data["articles"].values():
+        del entry["images_skipped"]
+    (tmp_path / PROGRESS_FILE).write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+    fetcher = ImageFetcher(image_pages())
+    run(tmp_path, fetcher, urls=IMG_URLS[1:])
+    assert (fetcher.requests == IMG_URLS[1:]) is expect_refetch
+    assert load_progress(tmp_path)["articles"][IMG_URLS[1]]["status"] == "done"
+
+
+def test_cli_no_images_then_default_run(tmp_path, monkeypatch):
+    links = tmp_path / "links.txt"
+    links.write_text("\n".join(IMG_URLS), encoding="utf-8")
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(batch_module.time, "sleep", lambda s: None)
+    first = ImageFetcher(image_pages())
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: first)
+    assert cli.main(["--urls", str(links), "-o", str(out_dir), "--no-images"]) == 0
+    assert first.image_requests == []
+    second = ImageFetcher(image_pages())
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: second)
+    assert cli.main(["--urls", str(links), "-o", str(out_dir)]) == 0
+    assert len(second.image_requests) == 4
+    assert {e["status"] for e in load_progress(out_dir)["articles"].values()} == {"done"}
