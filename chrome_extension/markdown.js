@@ -122,43 +122,92 @@ const WeChatMarkdown = (() => {
         return d.toISOString().replace(/\.\d{3}Z$/, '+08:00');
     }
 
+    // 字段与顺序同 render.py：title/author/url/date 必有（可为空），其余有值才写
     function frontMatter(a) {
-        const fields = {
-            title: a.title,
-            author: a.author,
+        const required = {
+            title: a.title || '',
+            author: a.author || '',
+            url: a.url || '',
+            date: a.publishTime ? isoChina(a.publishTime) : ''
+        };
+        const optional = {
             account: a.account,
             biz: a.biz,
-            url: a.url,
+            user_name: a.userName,
             source_url: a.sourceUrl,
-            publish_time: a.publishTime ? isoChina(a.publishTime) : '',
             description: a.description,
             cover: a.cover,
             downloaded_at: isoChina(Math.floor(Date.now() / 1000))
         };
-        const lines = Object.entries(fields).filter(([, v]) => v).map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
+        const lines = [
+            ...Object.entries(required),
+            ...Object.entries(optional).filter(([, v]) => v)
+        ].map(([k, v]) => `${k}: ${JSON.stringify(v)}`);
         return `---\n${lines.join('\n')}\n---\n`;
+    }
+
+    async function sha1Prefix(key) {
+        const digest = await crypto.subtle.digest('SHA-1', new TextEncoder().encode(key));
+        return Array.from(new Uint8Array(digest), b => b.toString(16).padStart(2, '0')).join('').slice(0, 8);
+    }
+
+    // 同 downloader.py 的 article_id：biz:mid:idx 的 SHA-1 前 8 位，取不到 biz/mid 时退回短链接短码
+    function articleIdKey(a) {
+        const urls = [a.url, a.requestUrl].filter(Boolean);
+        const fromLinks = name => {
+            for (const url of urls) {
+                try {
+                    const value = new URL(url).searchParams.get(name);
+                    if (value) return value;
+                } catch (e) {
+                    // 忽略无法解析的链接
+                }
+            }
+            return '';
+        };
+        const shortCode = url => {
+            try {
+                const path = new URL(url).pathname;
+                return path.startsWith('/s/') ? path.slice(3).replace(/^\/+|\/+$/g, '') : '';
+            } catch (e) {
+                return '';
+            }
+        };
+        const biz = a.biz || fromLinks('__biz');
+        const mid = a.mid || fromLinks('mid');
+        const idx = a.idx || fromLinks('idx') || '1';
+        if (biz && mid) return `${biz}:${mid}:${idx}`;
+        return urls.map(shortCode).find(Boolean) || a.url || '';
+    }
+
+    function articleId(a) {
+        return sha1Prefix(articleIdKey(a));
     }
 
     function render(article) {
         return `${frontMatter(article)}\n# ${article.title}\n\n${htmlToMarkdown(article.contentHtml)}`;
     }
 
-    function safeFilename(name, maxLength = 80) {
+    // 同 downloader.py 的 safe_filename；maxBytes 按 UTF-8 计，给日期、ID 后缀留余量
+    function safeFilename(name, maxLength = 80, maxBytes = 150) {
         const reserved = /^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$/i;
+        const encoder = new TextEncoder();
         let out = (name || '').normalize('NFC')
             .replace(/[<>:"/\\|?*\x00-\x1f]/g, '_')
             .replace(/\s+/g, ' ').trim().replace(/^\.+|\.+$/g, '');
-        out = out.slice(0, maxLength).replace(/[ .]+$/, '');
+        let chars = Array.from(out).slice(0, maxLength);
+        while (encoder.encode(chars.join('')).length > maxBytes) chars.pop();
+        out = chars.join('').replace(/[ .]+$/, '');
         if (!out) return '未命名';
         return reserved.test(out) ? `_${out}` : out;
     }
 
-    function filename(article) {
+    async function filename(article) {
         const date = isoChina(article.publishTime || Math.floor(Date.now() / 1000)).slice(0, 10);
-        return `${date}_${safeFilename(article.title)}.md`;
+        return `${date}_${safeFilename(article.title)}_${await articleId(article)}.md`;
     }
 
-    return { htmlToMarkdown, render, filename, safeFilename };
+    return { htmlToMarkdown, render, filename, safeFilename, articleId, frontMatter };
 })();
 
 if (typeof module !== 'undefined') {

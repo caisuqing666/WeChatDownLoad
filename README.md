@@ -103,7 +103,7 @@ print(f"新下载 {result.downloaded} 篇，跳过 {result.skipped} 篇，失败
 1. 打开 `chrome://extensions/`，开启右上角「开发者模式」。
 2. 点「加载已解压的扩展程序」，选择本仓库的 `chrome_extension` 文件夹。
 3. 打开一篇公众号文章，点工具栏里的扩展图标：
-   - **保存为 Markdown**：直接用当前页面内容生成，保存到 `下载/公众号/<公众号名称>/<发布日期>_<标题>.md`。图片保留微信原始链接，不下载到本地；需要本地图片时用下面的按钮交给命令行。
+   - **保存为 Markdown**：直接用当前页面内容生成，保存到 `下载/公众号/<公众号名称>/<发布日期>_<标题>_<文章ID>.md`，front matter 和文件名与命令行版相同。图片保留微信原始链接，不下载到本地；需要本地图片时用下面的按钮交给命令行。
    - **发送到本地命令行**：把当前链接交给本机的命令行下载，适合想统一存到某个目录的情况。需要先启动接收服务：
 
      ```bash
@@ -121,7 +121,7 @@ python -m pytest tests
 
 `tests/fixtures/real/` 是真实抓取的文章页面（用 `tests/fixtures/trim_page.py` 去掉了无关的内联 JS/CSS），解析逻辑可以离线测试。`tests/fixtures/album/` 是真实的合集接口响应（看理想 96 篇完整 6 页、RWKV 31 篇、津房字的次条文章游标、空列表和 ret=10004）。
 
-浏览器扩展的 Markdown 转换有单独的 Node 测试（需要 Node 18+）：
+浏览器扩展有单独的 Node 测试（需要 Node 18+）：代码块转换，以及对 `tests/fixtures` 里的页面与命令行版逐字段比较 front matter 和文件名（会调用 `python3`，可用环境变量 `PYTHON` 指定）。
 
 ```bash
 cd tests/extension && npm install && npm test

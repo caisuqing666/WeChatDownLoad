@@ -60,7 +60,7 @@ async function save() {
     try {
         const markdown = WeChatMarkdown.render(article);
         const folder = WeChatMarkdown.safeFilename(article.account || '未知公众号');
-        const filename = `公众号/${folder}/${WeChatMarkdown.filename(article)}`;
+        const filename = `公众号/${folder}/${await WeChatMarkdown.filename(article)}`;
         await chrome.downloads.download({
             url: 'data:text/markdown;charset=utf-8,' + encodeURIComponent(markdown),
             filename,

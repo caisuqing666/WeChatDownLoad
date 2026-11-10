@@ -3,7 +3,7 @@
   "private": true,
   "description": "浏览器扩展（chrome_extension/）的测试依赖；扩展本身不需要构建",
   "scripts": {
-    "test": "node --test *.test.js"
+    "test": "node --test markdown.test.js parity.test.js"
   },
   "devDependencies": {
     "jsdom": "^26.1.0"

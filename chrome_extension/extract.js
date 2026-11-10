@@ -50,7 +50,7 @@ function extractWeChatArticle() {
 
     const content = document.querySelector('#js_content');
     if (!content) {
-        const verify = /环境异常|完成验证/.test(document.body ? document.body.innerText : '');
+        const verify = /环境异常|完成验证/.test(document.body ? document.body.textContent : '');
         return { error: verify ? '页面要求验证，请先在页面上完成验证再保存' : '没有找到文章正文（图片/视频分享类消息暂不支持）' };
     }
 
@@ -85,14 +85,19 @@ function extractWeChatArticle() {
     });
 
     const ts = parseInt(jsVar('create_time') || jsVar('ct'), 10);
+    const digits = (...names) => names.map(jsVar).find(v => /^\d+$/.test(v)) || '';
 
     // 字段优先级与命令行版 wechat_downloader/parse.py 一致：页面变量优先，DOM 兜底
     return {
         title: jsVar('msg_title') || text('#activity-name') || meta('og:title') || '未命名文章',
         author: jsVar('author') || text('#js_author_name'),
         account: jsVar('nickname') || text('#js_name'),
-        biz: jsVar('biz') || new URLSearchParams(location.search).get('__biz') || '',
+        biz: jsVar('biz'),
+        mid: digits('mid', 'appmsgid'),
+        idx: digits('idx', 'itemidx'),
+        userName: jsVar('user_name'),
         url: normalizeUrl(jsVar('msg_link') || location.href),
+        requestUrl: location.href,
         sourceUrl: jsVar('msg_source_url'),
         publishTime: Number.isFinite(ts) && ts > 0 ? ts : 0,
         description: jsVar('msg_desc'),

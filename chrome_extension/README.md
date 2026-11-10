@@ -17,4 +17,4 @@
 - `downloads`：保存 Markdown 文件。
 - `http://127.0.0.1:4546/*`：「发送到本地命令行」按钮访问本机的 `python -m wechat_downloader.receiver`。
 
-输出格式与命令行版（`wechat_downloader/render.py`）保持一致；修改其中一边时请同步另一边。
+front matter 和文件名与命令行版（`wechat_downloader/render.py`、`downloader.py`）保持一致，由 `tests/extension/parity.test.js` 对样例页面逐字段比较；修改其中一边时请同步另一边。
