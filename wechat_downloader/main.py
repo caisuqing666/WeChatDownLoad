@@ -2,10 +2,12 @@
 主程序入口
 """
 import argparse
+import random
 import sys
 import time
 from typing import List, Optional
 
+from .album import fetch_album_listing
 from .api import WeChatAPI
 from .batch import PROGRESS_FILE, download_url_list, print_result, print_summary, read_url_file
 from .downloader import ArticleDownloader, RollbackError
@@ -86,6 +88,9 @@ def _main(argv: Optional[List[str]] = None) -> int:
   # 按链接清单批量下载（每行一个链接，# 开头为注释），中断后重新运行会跳过已下载的
   python -m wechat_downloader.main --urls links.txt -o ~/Documents/公众号 --delay 5
 
+  # 下载整个公众号合集（不需要登录），列表缓存在输出目录，中断后重新运行会接着下
+  python -m wechat_downloader.main --album "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&action=getalbum&album_id=..."
+
   # 用历史文章接口批量下载（需要从微信客户端抓到的 token，见 README）
   python -m wechat_downloader.main --url URL --token TOKEN --batch --count 10
         """
@@ -97,10 +102,14 @@ def _main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument('--interval', type=float, default=2.0, help='多篇下载之间的间隔秒数（默认: 2）')
     parser.add_argument('--urls', dest='urls_file', metavar='FILE',
                         help=f'链接清单文件：每行一个链接，忽略空行和 # 注释；进度记在输出目录的 {PROGRESS_FILE}')
-    parser.add_argument('--delay', type=float, default=3.0, help='--urls 模式两篇之间的基础等待秒数（默认: 3）')
-    parser.add_argument('--jitter', type=float, default=2.0, help='--urls 模式在基础等待上再随机加 0~N 秒（默认: 2）')
+    parser.add_argument('--album', metavar='ALBUM_URL',
+                        help='公众号合集链接（mp/appmsgalbum?__biz=...&album_id=...）：不登录翻页拿到全部文章后批量下载')
+    parser.add_argument('--refresh-album', action='store_true', help='忽略输出目录里缓存的合集列表，重新翻页')
+    parser.add_argument('--delay', type=float, default=3.0,
+                        help='--urls/--album 模式两次请求之间的基础等待秒数（默认: 3；合集列表请求至少 3 秒）')
+    parser.add_argument('--jitter', type=float, default=2.0, help='--urls/--album 模式在基础等待上再随机加 0~N 秒（默认: 2）')
     parser.add_argument('--no-retry-images', action='store_true',
-                        help='--urls 模式不重试上次有图片下载失败的文章（默认会重新下载补齐缺图）')
+                        help='--urls/--album 模式不重试上次有图片下载失败的文章（默认会重新下载补齐缺图）')
     parser.add_argument('--token', '-t', help='历史文章接口 token（仅 --batch 使用）')
     parser.add_argument('--token-clipboard', action='store_true', help='从剪贴板读取token')
     parser.add_argument('--batch', '-b', action='store_true', help='通过历史文章接口批量下载该公众号文章（需要 token）')
@@ -109,12 +118,14 @@ def _main(argv: Optional[List[str]] = None) -> int:
 
     args = parser.parse_args(argv)
     urls = args.urls + args.url
-    if args.urls_file:
+    if args.urls_file and args.album:
+        parser.error("--urls 和 --album 不能同时使用")
+    if args.urls_file or args.album:
         if urls or args.batch:
-            parser.error("--urls 不能和直接给出的链接或 --batch 同时使用")
+            parser.error("--urls/--album 不能和直接给出的链接或 --batch 同时使用")
         if args.delay < 0 or args.jitter < 0:
             parser.error("--delay 和 --jitter 不能为负数")
-        return _download_url_file(args)
+        return _download_album(args) if args.album else _download_url_file(args)
     if not urls:
         parser.error("请至少提供一个文章链接")
 
@@ -165,6 +176,34 @@ def _download_url_file(args) -> int:
         return 1
     downloader = ArticleDownloader(output_dir=args.output, download_images=not args.no_images)
     result = download_url_list(downloader, urls, delay=args.delay, jitter=args.jitter,
+                               retry_images=not args.no_retry_images)
+    print_summary(result, downloader.output_dir / PROGRESS_FILE)
+    return 1 if result.failed or result.partial or result.stopped else 0
+
+
+def _download_album(args) -> int:
+    downloader = ArticleDownloader(output_dir=args.output, download_images=not args.no_images)
+    try:
+        listing = fetch_album_listing(downloader.fetcher.session, downloader.output_dir, args.album,
+                                      delay=args.delay, jitter=args.jitter, refresh=args.refresh_album)
+    except VerificationRequired as e:
+        print(f"✗ {e}")
+        return 1
+    except WeChatError as e:
+        print(f"错误: {e}")
+        return 1
+    name = "／".join(part for part in (listing.nickname, listing.title) if part) or listing.album_id
+    print(f"合集：{name}，共 {len(listing.articles)} 篇")
+    if listing.article_count > len(listing.articles):
+        print(f"! 合集显示有 {listing.article_count} 篇，接口只返回了 {len(listing.articles)} 篇"
+              f"（可能有已删除或付费文章），可稍后加 --refresh-album 重试")
+    if not listing.articles:
+        print("错误: 合集里没有可下载的文章")
+        return 1
+    print()
+    if listing.requests and (args.delay > 0 or args.jitter > 0):
+        time.sleep(args.delay + random.uniform(0, args.jitter))
+    result = download_url_list(downloader, listing.urls, delay=args.delay, jitter=args.jitter,
                                retry_images=not args.no_retry_images)
     print_summary(result, downloader.output_dir / PROGRESS_FILE)
     return 1 if result.failed or result.partial or result.stopped else 0

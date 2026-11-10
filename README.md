@@ -54,11 +54,26 @@ python -m wechat_downloader.main --urls links.txt --delay 5 --jitter 3
 }
 ```
 
+### 下载整个公众号合集（`--album`）
+
+公众号文章里的“合集/话题”标签（如 `#李想主义`）点开后，地址形如 `https://mp.weixin.qq.com/mp/appmsgalbum?__biz=...&action=getalbum&album_id=...`。合集列表不登录就能翻页拿到，所以可以一次下载整个合集：
+
+```bash
+python -m wechat_downloader.main --album "https://mp.weixin.qq.com/mp/appmsgalbum?__biz=MzA3MDM3NjE5NQ==&action=getalbum&album_id=1375870284640911361" -o ~/Documents/公众号
+
+# 合集更新后重新获取列表（已下载的文章仍会跳过）
+python -m wechat_downloader.main --album "合集链接" -o ~/Documents/公众号 --refresh-album
+```
+
+- 先每页 20 篇翻完合集列表，再按 `--urls` 的流程逐篇下载：同样用 `--delay`/`--jitter` 限速（翻列表时每次请求至少间隔 3 秒），进度写在 `.wechat_progress.json`，已下载的自动跳过。
+- 列表缓存在输出目录的 `.wechat_album_<album_id>.json`，每翻一页写一次。翻完后再运行同一命令直接使用缓存，不会重新翻页；翻到一半被打断（包括遇到验证页）时，下次从断点接着翻。
+- 合集接口返回的不是 JSON（一般是“环境异常”验证页）时立即停止，提示稍后再跑；返回 `ret=10004` 表示 album_id 错误或合集不存在，其他非 0 的 `ret` 会原样报出。
+
 ### 注意事项
 
 遇到“环境异常”验证页时程序会停止后续请求；稍等一段时间，或在浏览器里打开该链接完成验证后再试。长链接缺少 `chksm` 等参数时微信可能返回“未知错误”页，请复制完整链接或改用 /s/ 短链接。图片/视频分享类消息暂不支持。
 
-运行测试：`pip install pytest && python -m pytest tests`。`tests/fixtures/real/` 是真实抓取的文章页面（用 `tests/fixtures/trim_page.py` 去掉了无关的内联 JS/CSS），解析逻辑可以离线测试。
+运行测试：`pip install pytest && python -m pytest tests`。`tests/fixtures/real/` 是真实抓取的文章页面（用 `tests/fixtures/trim_page.py` 去掉了无关的内联 JS/CSS），解析逻辑可以离线测试。`tests/fixtures/album/` 是真实的合集接口响应（看理想 96 篇完整 6 页、RWKV 31 篇、津房字的次条文章游标、空列表和 ret=10004）。
 
 # 微信公众号文章批量下载工具
 
