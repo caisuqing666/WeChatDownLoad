@@ -74,7 +74,7 @@ def parse_album_response(content_type: str, text: str) -> Dict:
     if str(ret) != "0":
         raise AlbumError(f"合集接口返回 ret={ret}：接口拒绝了不带凭证的请求，暂时无法通过合集获取列表")
     resp = data.get("getalbum_resp")
-    return resp if isinstance(resp, dict) else {}
+    return resp if isinstance(resp, dict) else None
 
 
 def page_articles(resp: Dict) -> List[Dict]:
@@ -164,6 +164,28 @@ def _entry(item: Dict) -> Dict:
     }
 
 
+def _page_problem(resp: Optional[Dict], seen) -> Tuple[str, List[Dict]]:
+    """
+    只有 continue_flag 明确是 "0"（翻完）或 "1"（还有）的页才可信；其他情况整页丢弃，游标不动。
+    返回 (异常原因, 本页新文章)，正常页的异常原因为空串。
+    """
+    if resp is None:
+        return "接口返回成功但缺少 getalbum_resp", []
+    flag = resp.get("continue_flag")
+    if str(flag) not in ("0", "1") or isinstance(flag, bool):
+        return f"接口返回的 continue_flag 异常（{'缺失' if flag is None else repr(flag)}）", []
+    new, keys = [], set(seen)
+    for item in page_articles(resp):
+        entry = _entry(item)
+        key = (entry["msgid"], entry["itemidx"])
+        if key not in keys:
+            keys.add(key)
+            new.append(entry)
+    if str(flag) == "1" and not new:
+        return "接口说还有下一页，但没有返回新文章", []
+    return "", new
+
+
 def list_album(get_page: Callable[[Dict[str, str]], Tuple[str, str]], listing: AlbumListing,
                delay: float = 3.0, jitter: float = 2.0, on_page: Optional[Callable[[AlbumListing], None]] = None,
                sleep: Optional[Callable[[float], None]] = None,
@@ -171,8 +193,9 @@ def list_album(get_page: Callable[[Dict[str, str]], Tuple[str, str]], listing: A
     """
     从 listing.cursor（为空则从首页）翻到底，结果追加到 listing。
     游标是上一页最后一条的 msgid+itemidx，必须精确：itemidx 不对时接口返回空列表却仍说 continue_flag=1。
-    只有 continue_flag≠1 才算翻完。continue_flag=1 却没有新文章（空列表或整页重复）是分页异常：
-    游标不动，按退避重试 PAGE_RETRIES 次，仍然没有就抛 AlbumPaginationError，listing 保持未完成。
+    只有 continue_flag 明确为 0 才算翻完。continue_flag=1 却没有新文章（空列表或整页重复），
+    或缺 getalbum_resp / continue_flag 缺失或不是 0/1，都是分页异常：整页丢弃、游标不动，
+    按退避重试 PAGE_RETRIES 次，仍然异常就抛 AlbumPaginationError，listing 保持未完成。
     每页拿到新文章后调用 on_page，便于中途停下后续翻。两次请求之间至少等 MIN_LIST_DELAY 秒。
     """
     sleep = sleep or time.sleep
@@ -184,35 +207,28 @@ def list_album(get_page: Callable[[Dict[str, str]], Tuple[str, str]], listing: A
             sleep(max(delay, MIN_LIST_DELAY) * 2 ** failures + (uniform(0, jitter) if jitter > 0 else 0))
         resp = parse_album_response(*get_page(album_params(listing.biz, listing.album_id, listing.cursor)))
         listing.requests += 1
-        info = resp.get("base_info")
-        if isinstance(info, dict) and info.get("title"):
-            listing.title = html.unescape(str(info.get("title", "")))
-            listing.nickname = html.unescape(str(info.get("nickname", "")))
-            listing.article_count = int(info.get("article_count") or 0)
-        items = page_articles(resp)
-        new = 0
-        for item in items:
-            entry = _entry(item)
-            key = (entry["msgid"], entry["itemidx"])
-            if key not in seen:
-                seen.add(key)
-                listing.articles.append(entry)
-                new += 1
-        finished = str(resp.get("continue_flag")) != "1"
-        if not new and not finished:
+        problem, new = _page_problem(resp, seen)
+        if problem:
             failures += 1
             if failures > PAGE_RETRIES:
                 raise AlbumPaginationError(
-                    f"合集列表翻页异常：接口说还有下一页，但连续 {failures} 次没有返回新文章"
+                    f"合集列表翻页异常：{problem}，连续 {failures} 次都是这样"
                     f"（已拿到 {len(listing.articles)} 篇）。列表已按未完成保存，请稍后重新运行同一命令，"
                     f"会从上次的位置接着翻；一直如此可加 --refresh-album 从头翻"
                 )
             continue
         failures = 0
+        info = resp.get("base_info")
+        if isinstance(info, dict) and info.get("title"):
+            listing.title = html.unescape(str(info.get("title", "")))
+            listing.nickname = html.unescape(str(info.get("nickname", "")))
+            listing.article_count = int(info.get("article_count") or 0)
+        for entry in new:
+            seen.add((entry["msgid"], entry["itemidx"]))
+            listing.articles.append(entry)
         if new:
-            last = listing.articles[-1]
-            listing.cursor = (last["msgid"], last["itemidx"])
-        listing.complete = finished
+            listing.cursor = (new[-1]["msgid"], new[-1]["itemidx"])
+        listing.complete = str(resp["continue_flag"]) == "0"
         if on_page:
             on_page(listing)
     return listing

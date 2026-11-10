@@ -157,6 +157,66 @@ def test_duplicate_page_with_continue_flag_is_not_completion():
     assert listing.complete and len(listing.articles) == 96 and len(server.requests) == 5
 
 
+def _without(name, *keys):
+    data = json.loads(fixture(name))
+    target = data
+    for key in keys[:-1]:
+        target = target[key]
+    del target[keys[-1]]
+    return JSON_TYPE, json.dumps(data, ensure_ascii=False)
+
+
+def _with_flag(name, value):
+    data = json.loads(fixture(name))
+    data["getalbum_resp"]["continue_flag"] = value
+    return JSON_TYPE, json.dumps(data, ensure_ascii=False)
+
+
+@pytest.mark.parametrize("bad_page", [
+    _without("rwkv-p2.json", "getalbum_resp", "continue_flag"),
+    _without("rwkv-p2.json", "getalbum_resp"),
+    _with_flag("rwkv-p2.json", "2"),
+    _with_flag("rwkv-p2.json", None),
+    _with_flag("rwkv-p2.json", ""),
+], ids=["no-continue-flag", "no-getalbum-resp", "flag-2", "flag-null", "flag-empty"])
+def test_unexpected_continue_flag_is_pagination_error_not_completion(bad_page):
+    saved = []
+    retries = album_module.PAGE_RETRIES
+    server = AlbumServer(RWKV[2], overrides={n: bad_page for n in range(2, 3 + retries)})
+    listing = AlbumListing(biz=RWKV[0], album_id=RWKV[1])
+    with pytest.raises(AlbumPaginationError, match="翻页异常"):
+        run(RWKV, server=server, listing=listing, on_page=lambda l: saved.append(l.to_json()))
+    # 异常页里的文章不收、游标不动，缓存只停在第一页
+    assert not listing.complete and len(listing.articles) == 20
+    assert listing.cursor == ("2247486394", "1")
+    assert len(saved) == 1 and saved[-1]["complete"] is False and saved[-1]["cursor"] == ["2247486394", "1"]
+    assert all(r["begin_msgid"] == "2247486394" for r in server.requests[1:])
+
+    listing, server, _ = run(RWKV, listing=AlbumListing.from_json(saved[-1]))
+    assert listing.complete and len(listing.articles) == 31 and len(server.requests) == 1
+
+
+def test_bad_first_page_is_pagination_error():
+    server = AlbumServer(RWKV[2], overrides={n: _without("rwkv-p1.json", "getalbum_resp", "continue_flag")
+                                             for n in range(1, 4)})
+    listing = AlbumListing(biz=RWKV[0], album_id=RWKV[1])
+    with pytest.raises(AlbumPaginationError):
+        run(RWKV, server=server, listing=listing)
+    assert listing.articles == [] and listing.cursor is None and not listing.complete
+
+
+def test_cli_missing_continue_flag_keeps_cache_incomplete(tmp_path, monkeypatch, no_sleep, capsys):
+    out_dir = tmp_path / "out"
+    bad = _without("rwkv-p2.json", "getalbum_resp", "continue_flag")
+    fetcher = AlbumSiteFetcher(AlbumServer(RWKV[2], overrides={n: bad for n in range(2, 5)}))
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--album", ALBUM_URL, "-o", str(out_dir)]) == 1
+    assert fetcher.article_requests == [] and "continue_flag 异常（缺失）" in capsys.readouterr().out
+    cached = json.loads(cache_path(out_dir, RWKV[1]).read_text(encoding="utf-8"))
+    assert cached["complete"] is False and cached["cursor"] == ["2247486394", "1"]
+    assert len(cached["articles"]) == 20
+
+
 def test_old_cache_version_is_not_trusted(tmp_path, capsys):
     biz, album_id, _ = RWKV
     old = {"version": 1, "biz": biz, "album_id": album_id, "complete": True, "cursor": None,
