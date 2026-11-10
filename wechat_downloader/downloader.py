@@ -6,12 +6,15 @@ import hashlib
 import os
 import re
 import shutil
+import signal
 import tempfile
+import threading
 import unicodedata
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, Iterator, List, Optional
 from urllib.parse import parse_qs, quote, urlsplit
 
 from bs4 import BeautifulSoup
@@ -131,11 +134,10 @@ class ArticleDownloader:
         md_path = folder / f"{stem}.md"
         failed: List[str] = []
         kept: List[str] = []
+        assets = folder / assets_name
         new_assets: Optional[Path] = None
         md_tmp: Optional[Path] = None
-        assets = folder / assets_name
         backup: Optional[Path] = None
-        installed = False
         try:
             if download_images and article.images:
                 new_assets = Path(tempfile.mkdtemp(dir=folder, prefix=f".{assets_name}."))
@@ -146,25 +148,26 @@ class ArticleDownloader:
             with os.fdopen(fd, "w", encoding="utf-8") as f:
                 f.write(render_markdown(article))
             if new_assets is not None:
-                backup = _move_aside(assets)
-                os.replace(new_assets, assets)
-                new_assets = None
-                installed = True
-            os.replace(md_tmp, md_path)
-            md_tmp = None
-        except BaseException as error:
-            if installed or backup is not None:
-                _rollback(assets, backup, installed, error)
-            raise
-        else:
-            # 只有 .md 也替换成功后，旧图片才可以删
-            if backup is not None:
-                shutil.rmtree(backup, ignore_errors=True)
+                backup = Path(tempfile.mkdtemp(dir=folder, prefix=f".{assets_name}.old."))
+            with _defer_sigint():
+                try:
+                    if new_assets is not None:
+                        if assets.exists():
+                            os.replace(assets, backup / assets.name)
+                        os.replace(new_assets, assets)
+                    os.replace(md_tmp, md_path)
+                    if backup is not None:
+                        shutil.rmtree(backup, ignore_errors=True)
+                except BaseException as error:
+                    _recover(md_tmp, new_assets, assets, backup, error)
+                    raise
         finally:
-            if new_assets is not None:
+            if new_assets is not None and new_assets.exists():
                 shutil.rmtree(new_assets, ignore_errors=True)
             if md_tmp is not None:
                 md_tmp.unlink(missing_ok=True)
+            if backup is not None and backup.exists() and not any(backup.iterdir()):
+                backup.rmdir()
         return DownloadResult(article=article, path=md_path, failed_images=failed, kept_images=kept)
 
     def _save_images(self, urls: List[str], target: Path, previous: Path, assets_name: str):
@@ -220,32 +223,48 @@ class RollbackError(WeChatError):
     """保存失败后没能恢复旧结果；旧图片目录保留在备份位置，需要手动处理"""
 
 
-def _move_aside(path: Path) -> Optional[Path]:
-    """把已有目录挪进同级隐藏的备份目录并返回备份目录；原目录不存在时返回 None"""
-    if not path.exists():
-        return None
-    holder = Path(tempfile.mkdtemp(dir=path.parent, prefix=f".{path.name}.old."))
+@contextmanager
+def _defer_sigint() -> Iterator[None]:
+    """
+    提交区段内收到的 Ctrl+C 先记下，区段结束、原 handler 恢复后再按原 handler 处理，
+    避免两步替换之间被打断。只能在主线程安装 signal handler，其他线程直接执行。
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    received = []
+    previous = signal.signal(signal.SIGINT, lambda signum, frame: received.append(signum))
     try:
-        os.replace(path, holder / path.name)
-    except BaseException:
-        holder.rmdir()
-        raise
-    return holder
+        yield
+    finally:
+        signal.signal(signal.SIGINT, previous)
+        if received:
+            if callable(previous):
+                previous(signal.SIGINT, None)
+            elif previous != signal.SIG_IGN:
+                raise KeyboardInterrupt
 
 
-def _rollback(assets: Path, backup: Optional[Path], installed: bool, error: BaseException) -> None:
-    """撤掉已经换上的新图片目录，把备份挪回原处；任何一步失败都保留备份并明确报错"""
-    try:
-        if installed:
-            discarded = _move_aside(assets)
-            if discarded is not None:
-                shutil.rmtree(discarded, ignore_errors=True)
+def _recover(md_tmp: Path, new_assets: Optional[Path], assets: Path,
+             backup: Optional[Path], error: BaseException) -> None:
+    """
+    按磁盘上的实际状态收尾，不依赖替换后才更新的变量：
+    临时 .md 已不存在说明 .md 已提交，新结果生效，只需删备份；否则把图片目录恢复成旧的。
+    """
+    if not md_tmp.exists():
         if backup is not None:
-            os.replace(backup / assets.name, assets)
-            backup.rmdir()
+            shutil.rmtree(backup, ignore_errors=True)
+        return
+    old = backup / assets.name if backup is not None else None
+    try:
+        if new_assets is not None and not new_assets.exists() and assets.exists():
+            discarded = Path(tempfile.mkdtemp(dir=assets.parent, prefix=f".{assets.name}.discard."))
+            os.replace(assets, discarded / assets.name)
+            shutil.rmtree(discarded, ignore_errors=True)
+        if old is not None and old.exists():
+            os.replace(old, assets)
     except BaseException as rollback_error:
-        kept = backup / assets.name if backup is not None else None
-        where = f"旧图片目录保留在 {kept}，请手动移回 {assets}" if kept else f"请检查 {assets}"
+        where = f"旧图片目录保留在 {old}，请手动移回 {assets}" if old is not None and old.exists() else f"请检查 {assets}"
         raise RollbackError(f"保存失败（{error!r}），回滚也失败（{rollback_error!r}）：{where}") from rollback_error
 
 

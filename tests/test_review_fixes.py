@@ -6,6 +6,8 @@ from pathlib import Path
 import hashlib
 import os
 import re
+import signal
+import threading
 
 import pytest
 import yaml
@@ -13,7 +15,7 @@ import yaml
 import wechat_downloader.downloader as downloader_module
 from wechat_downloader import main as cli
 from wechat_downloader.api import WeChatAPI
-from wechat_downloader.downloader import ArticleDownloader, RollbackError, article_id
+from wechat_downloader.downloader import ArticleDownloader, RollbackError, _defer_sigint, article_id
 from wechat_downloader.fetch import VerificationRequired, WeChatError, check_article_page
 from wechat_downloader.parse import ParseError, extract_js_var, parse_article
 from wechat_downloader.render import render_markdown
@@ -603,3 +605,173 @@ def test_s2_missing_page_biz_uses_link_biz():
 def test_s2_request_url_params_used_when_msg_link_is_short():
     page = make_page("<p>正文</p>", biz="", msg_link="https://mp.weixin.qq.com/s/Short1", extra_js=FULL_VARS)
     assert article_id(parse_article(page, link(idx="2"))) == expected_id("2")
+
+
+# ---- PR #2 第四轮复核 ----
+
+REAL_RMTREE = downloader_module.shutil.rmtree
+NEW_PAGE = make_page(IMAGES_HTML + "<p>第二版</p>", msg_link=long_link(500))
+
+
+def assert_consistent(root: Path, before: dict):
+    """结果只能是完整的旧版本或完整的新版本，并且没有临时文件"""
+    assert no_temp_files(root)
+    md_files = list(root.rglob("*.md"))
+    if not before and not md_files:
+        assert [p for p in root.rglob("*") if p.is_file()] == []
+        return "nothing"
+    (md,) = md_files
+    text = md.read_text(encoding="utf-8")
+    if "第二版" not in text:
+        assert snapshot(root) == before
+        return "old"
+    assets = md.with_suffix(".assets")
+    files = snapshot(assets)
+    referenced = sorted(re.findall(r"\.assets/([^)]+)\)", text))
+    assert sorted(files) == referenced
+    assert all(data.startswith(b"v2:") for data in files.values())
+    return "new"
+
+
+def interrupt_after_nth_replace(monkeypatch, n):
+    calls = []
+
+    def fake(src, dst):
+        REAL_REPLACE(src, dst)
+        calls.append((src, dst))
+        if len(calls) == n:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(downloader_module.os, "replace", fake)
+
+
+def prepare(tmp_path, existing: bool) -> dict:
+    if existing:
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    return snapshot(tmp_path)
+
+
+# 提交区段里的 os.replace 依次是：旧图片目录 -> 备份、新图片目录 -> 正式位置、临时 .md -> 正式 .md；
+# 首次下载时没有第一步
+@pytest.mark.parametrize("existing, n, expected", [
+    (True, 1, "old"),
+    (True, 2, "old"),
+    (True, 3, "new"),
+    (False, 1, "nothing"),
+    (False, 2, "new"),
+])
+def test_t1_interrupt_right_after_each_replace(tmp_path, monkeypatch, existing, n, expected):
+    before = prepare(tmp_path, existing)
+    interrupt_after_nth_replace(monkeypatch, n)
+    with pytest.raises(KeyboardInterrupt):
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(NEW_PAGE)).download(SHORT_URL)
+    assert assert_consistent(tmp_path, before) == expected
+
+
+@pytest.mark.parametrize("delete_first", [False, True], ids=["before-delete-backup", "after-delete-backup"])
+def test_t1_interrupt_around_backup_deletion(tmp_path, monkeypatch, delete_first):
+    before = prepare(tmp_path, True)
+
+    def fake(path, *args, **kwargs):
+        if ".old." in Path(path).name and not fake.done:
+            fake.done = True
+            if delete_first:
+                REAL_RMTREE(path, *args, **kwargs)
+            raise KeyboardInterrupt
+        return REAL_RMTREE(path, *args, **kwargs)
+
+    fake.done = False
+    monkeypatch.setattr(downloader_module.shutil, "rmtree", fake)
+    with pytest.raises(KeyboardInterrupt):
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(NEW_PAGE)).download(SHORT_URL)
+    assert fake.done
+    assert assert_consistent(tmp_path, before) == "new"
+
+
+def test_t1_ordinary_error_after_md_replace_keeps_new_result(tmp_path, monkeypatch):
+    before = prepare(tmp_path, True)
+
+    def fake(path, *args, **kwargs):
+        if ".old." in Path(path).name and not fake.done:
+            fake.done = True
+            raise OSError("模拟删除备份时出错")
+        return REAL_RMTREE(path, *args, **kwargs)
+
+    fake.done = False
+    monkeypatch.setattr(downloader_module.shutil, "rmtree", fake)
+    with pytest.raises(OSError):
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(NEW_PAGE)).download(SHORT_URL)
+    assert assert_consistent(tmp_path, before) == "new"
+
+
+# SIGINT 延迟
+
+def test_t2_sigint_is_deferred_until_section_ends():
+    original = signal.getsignal(signal.SIGINT)
+    reached_end = False
+    with pytest.raises(KeyboardInterrupt):
+        with _defer_sigint():
+            os.kill(os.getpid(), signal.SIGINT)
+            for _ in range(1000):
+                pass
+            reached_end = True
+    assert reached_end
+    assert signal.getsignal(signal.SIGINT) is original
+
+
+def test_t2_no_signal_means_no_exception_and_handler_restored():
+    original = signal.getsignal(signal.SIGINT)
+    with _defer_sigint():
+        assert signal.getsignal(signal.SIGINT) is not original
+    assert signal.getsignal(signal.SIGINT) is original
+
+
+def test_t2_previous_handler_is_called_once(monkeypatch):
+    seen = []
+    previous = signal.signal(signal.SIGINT, lambda signum, frame: seen.append(signum))
+    try:
+        with _defer_sigint():
+            os.kill(os.getpid(), signal.SIGINT)
+            os.kill(os.getpid(), signal.SIGINT)
+            assert seen == []
+        assert seen == [signal.SIGINT]
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def test_t2_ignored_sigint_stays_ignored():
+    previous = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        with _defer_sigint():
+            os.kill(os.getpid(), signal.SIGINT)
+        assert signal.getsignal(signal.SIGINT) == signal.SIG_IGN
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def test_t2_worker_thread_does_not_touch_handlers():
+    original = signal.getsignal(signal.SIGINT)
+    seen = []
+
+    def work():
+        with _defer_sigint():
+            seen.append(signal.getsignal(signal.SIGINT))
+
+    thread = threading.Thread(target=work)
+    thread.start()
+    thread.join()
+    assert seen == [original]
+
+
+def test_t2_real_sigint_during_commit_finishes_commit_first(tmp_path, monkeypatch):
+    before = prepare(tmp_path, True)
+
+    def fake(src, dst):
+        REAL_REPLACE(src, dst)
+        if Path(dst).suffix == ".assets" and ".old." not in str(dst):
+            os.kill(os.getpid(), signal.SIGINT)
+
+    monkeypatch.setattr(downloader_module.os, "replace", fake)
+    with pytest.raises(KeyboardInterrupt):
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(NEW_PAGE)).download(SHORT_URL)
+    assert assert_consistent(tmp_path, before) == "new"
