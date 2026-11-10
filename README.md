@@ -65,7 +65,11 @@ python -m wechat_downloader.main --album "https://mp.weixin.qq.com/mp/appmsgalbu
 python -m wechat_downloader.main --album "合集链接" -o ~/Documents/公众号 --refresh-album
 ```
 
-- 先每页 20 篇翻完合集列表，再按 `--urls` 的流程逐篇下载：同样用 `--delay`/`--jitter` 限速（翻列表时每次请求至少间隔 3 秒），进度写在 `.wechat_progress.json`，已下载的自动跳过。
+- 先每页 20 篇翻完合集列表，再按 `--urls` 的流程逐篇下载，行为和上面完全一致：
+  - 同样用 `--delay`/`--jitter` 限速，翻列表时每次请求至少间隔 3 秒。
+  - 进度写在 `.wechat_progress.json`，已下载的自动跳过。
+  - 缺图文章记为 `partial`，下次默认重下补齐；加 `--no-retry-images` 则跳过缺图文章。
+  - 汇总和退出码规则相同：有失败、缺图或验证页停止时退出码为 1。
 - 列表缓存在输出目录的 `.wechat_album_<album_id>.json`，每翻一页写一次。只有接口返回 `continue_flag=0` 才算翻完，之后再运行同一命令直接使用缓存，不会重新翻页；翻到一半被打断（包括遇到验证页）时，下次从断点接着翻。旧版本程序写的缓存无法确认是否翻完，会从头重新翻（已下载的文章仍跳过）。
 - 接口说还有下一页（`continue_flag=1`）却没有返回新文章（空列表或整页重复）时，按 6、12 秒（`--delay` 更大时按比例加长）退避重试 2 次，仍然没有就停止，列表按未完成保存，稍后重新运行同一命令从断点接着翻。
 - 合集接口返回的不是 JSON（一般是“环境异常”验证页）时立即停止，提示稍后再跑；返回 `ret=10004` 表示 album_id 错误或合集不存在，其他非 0 的 `ret` 会原样报出。

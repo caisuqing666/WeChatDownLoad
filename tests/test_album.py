@@ -222,8 +222,10 @@ class FakeResponse:
 class AlbumSiteFetcher:
     """同时扮演合集接口（session.get）和文章页面（get_article_html）"""
 
-    def __init__(self, server):
+    def __init__(self, server, images=None, broken=()):
         self.server = server
+        self.images = images or {}
+        self.broken = set(broken)
         self.article_requests = []
         self.session = self
 
@@ -234,12 +236,16 @@ class AlbumSiteFetcher:
     def get_article_html(self, url):
         self.article_requests.append(url)
         query = parse_qs(urlsplit(url).query)
-        page = make_page(f"<p>{query['mid'][0]}</p>", title=f"文章{query['mid'][0]}", biz=query["__biz"][0],
+        image = self.images.get(query["mid"][0])
+        body = f"<p>{query['mid'][0]}</p>" + (f'<p><img data-src="{image}"></p>' if image else "")
+        page = make_page(body, title=f"文章{query['mid'][0]}", biz=query["__biz"][0],
                          extra_js=f'var mid = "{query["mid"][0]}"; var idx = "{query["idx"][0]}";')
         check_article_page(page)
         return page
 
     def get_image(self, url):
+        if url in self.broken:
+            raise album_module.WeChatError(f"下载图片失败：{url}")
         return b"img", "image/jpeg"
 
 
@@ -331,3 +337,32 @@ def test_cli_album_conflicts_with_other_modes(tmp_path):
         cli.main(["--album", ALBUM_URL, "--urls", str(tmp_path / "x.txt")])
     with pytest.raises(SystemExit):
         cli.main(["--album", ALBUM_URL, "https://mp.weixin.qq.com/s/abc"])
+
+
+def test_cli_album_partial_images_retried_on_rerun(tmp_path, monkeypatch, no_sleep, capsys):
+    out_dir = tmp_path / "out"
+    image = "https://mmbiz.qpic.cn/mmbiz_png/album-test/640?wx_fmt=png"
+    mid = "2247484024"  # RWKV 合集第一篇
+    fetcher = AlbumSiteFetcher(AlbumServer(RWKV[2]), images={mid: image}, broken={image})
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--album", ALBUM_URL, "-o", str(out_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "缺图 1 篇" in out and len(fetcher.article_requests) == 31
+    progress = json.loads((out_dir / PROGRESS_FILE).read_text(encoding="utf-8"))["articles"]
+    partial = [url for url, entry in progress.items() if entry["status"] == "partial"]
+    assert len(partial) == 1 and f"mid={mid}" in partial[0]
+
+    # --no-retry-images：缺图文章当作已下载跳过，仍报缺图，不发任何请求
+    fetcher = AlbumSiteFetcher(AlbumServer(RWKV[2]), images={mid: image})
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--album", ALBUM_URL, "-o", str(out_dir), "--no-retry-images"]) == 1
+    assert fetcher.server.requests == [] and fetcher.article_requests == []
+    assert "缺图 1 篇" in capsys.readouterr().out
+
+    # 默认重跑：列表用缓存，只重下缺图那一篇，补齐后退出码 0
+    fetcher = AlbumSiteFetcher(AlbumServer(RWKV[2]), images={mid: image})
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--album", ALBUM_URL, "-o", str(out_dir)]) == 0
+    assert fetcher.server.requests == [] and fetcher.article_requests == partial
+    progress = json.loads((out_dir / PROGRESS_FILE).read_text(encoding="utf-8"))["articles"]
+    assert all(entry["status"] == "done" for entry in progress.values())
