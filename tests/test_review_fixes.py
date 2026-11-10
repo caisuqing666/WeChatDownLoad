@@ -775,3 +775,126 @@ def test_t2_real_sigint_during_commit_finishes_commit_first(tmp_path, monkeypatc
     with pytest.raises(KeyboardInterrupt):
         ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(NEW_PAGE)).download(SHORT_URL)
     assert assert_consistent(tmp_path, before) == "new"
+
+
+# ---- PR #2 第五轮复核 ----
+
+def sigint_then(exc):
+    """返回一个先给自己发 SIGINT 再抛 exc 的动作，模拟“提交时按了 Ctrl+C 又碰上写入失败”"""
+    def act():
+        os.kill(os.getpid(), signal.SIGINT)
+        raise exc
+    return act
+
+
+def patch_commit(monkeypatch, on_md, on_restore=None):
+    def fake(src, dst):
+        src, dst = Path(src), Path(dst)
+        if dst.suffix == ".md":
+            on_md()
+        if on_restore is not None and ".old." in str(src) and dst.suffix == ".assets":
+            on_restore()
+        return REAL_REPLACE(src, dst)
+
+    monkeypatch.setattr(downloader_module.os, "replace", fake)
+
+
+def raise_(exc):
+    def act():
+        raise exc
+    return act
+
+
+def test_u1_rollback_error_is_outermost_despite_sigint(tmp_path, monkeypatch):
+    first = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    old_md = first.path.read_bytes()
+    old_assets = snapshot(first.path.with_suffix(".assets"))
+    original = signal.getsignal(signal.SIGINT)
+    patch_commit(monkeypatch, sigint_then(PermissionError("拒绝访问")), raise_(OSError("恢复失败")))
+    with pytest.raises(RollbackError) as info:
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(NEW_PAGE)).download(SHORT_URL)
+    error = info.value
+    assert error.interrupted is True
+    assert "收到过中断" in str(error)
+    assert error.backup_path is not None and error.backup_path.is_dir()
+    assert snapshot(error.backup_path) == old_assets
+    assert first.path.read_bytes() == old_md
+    assert signal.getsignal(signal.SIGINT) is original
+
+
+def test_u1_rollback_error_without_sigint_is_not_marked(tmp_path, monkeypatch):
+    prepare(tmp_path, True)
+    patch_commit(monkeypatch, raise_(PermissionError("拒绝访问")), raise_(OSError("恢复失败")))
+    with pytest.raises(RollbackError) as info:
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(NEW_PAGE)).download(SHORT_URL)
+    assert info.value.interrupted is False
+    assert "收到过中断" not in str(info.value)
+
+
+def test_u2_sigint_with_recovered_failure_raises_original_error(tmp_path, monkeypatch):
+    """
+    提交失败但回滚成功时，抛出的是原来的提交错误（这里是 PermissionError），而不是 KeyboardInterrupt：
+    区段内已有异常在传播时一律不补发中断，只在异常上标记 interrupted=True；
+    磁盘已恢复成旧版本，CLI 看到这个标记会以 130 退出。
+    """
+    before = prepare(tmp_path, True)
+    original = signal.getsignal(signal.SIGINT)
+    patch_commit(monkeypatch, sigint_then(PermissionError("拒绝访问")))
+    with pytest.raises(PermissionError) as info:
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=ChangedBytesFetcher(NEW_PAGE)).download(SHORT_URL)
+    assert getattr(info.value, "interrupted", False) is True
+    assert assert_consistent(tmp_path, before) == "old"
+    assert signal.getsignal(signal.SIGINT) is original
+
+
+def test_u2_defer_sigint_does_not_mask_inflight_exception():
+    seen = []
+    previous = signal.signal(signal.SIGINT, lambda signum, frame: seen.append(signum))
+    try:
+        with pytest.raises(ValueError) as info:
+            with _defer_sigint():
+                os.kill(os.getpid(), signal.SIGINT)
+                raise ValueError("区段内的错误")
+        assert info.value.interrupted is True
+        assert seen == []
+    finally:
+        signal.signal(signal.SIGINT, previous)
+
+
+def test_u2_no_inflight_exception_still_raises_keyboard_interrupt():
+    with pytest.raises(KeyboardInterrupt):
+        with _defer_sigint():
+            os.kill(os.getpid(), signal.SIGINT)
+
+
+def run_cli(tmp_path, monkeypatch, fetcher, urls):
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    return cli.main([*urls, "-o", str(tmp_path), "--interval", "0"])
+
+
+def test_u3_cli_rollback_error_with_sigint_exits_130_and_prints_backup(tmp_path, monkeypatch, capsys):
+    prepare(tmp_path, True)
+    patch_commit(monkeypatch, sigint_then(PermissionError("拒绝访问")), raise_(OSError("恢复失败")))
+    fetcher = ChangedBytesFetcher(NEW_PAGE)
+    assert run_cli(tmp_path, monkeypatch, fetcher, [SHORT_URL, SHORT_URL]) == 130
+    out = capsys.readouterr().out
+    backups = [p for p in tmp_path.rglob("*.assets") if ".old." in p.parent.name]
+    assert len(backups) == 1 and str(backups[0]) in out
+    assert "[2/2]" not in out
+
+
+def test_u3_cli_rollback_error_without_sigint_exits_1_and_stops(tmp_path, monkeypatch, capsys):
+    prepare(tmp_path, True)
+    patch_commit(monkeypatch, raise_(PermissionError("拒绝访问")), raise_(OSError("恢复失败")))
+    fetcher = ChangedBytesFetcher(NEW_PAGE)
+    assert run_cli(tmp_path, monkeypatch, fetcher, [SHORT_URL, SHORT_URL]) == 1
+    out = capsys.readouterr().out
+    assert "旧图片备份：" in out
+    assert "[2/2]" not in out
+
+
+def test_u3_cli_interrupted_ordinary_failure_exits_130(tmp_path, monkeypatch, capsys):
+    prepare(tmp_path, True)
+    patch_commit(monkeypatch, sigint_then(PermissionError("拒绝访问")))
+    assert run_cli(tmp_path, monkeypatch, ChangedBytesFetcher(NEW_PAGE), [SHORT_URL]) == 130
+    assert "期间收到过中断" in capsys.readouterr().out

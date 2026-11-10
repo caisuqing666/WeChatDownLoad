@@ -220,7 +220,16 @@ class ArticleDownloader:
 
 
 class RollbackError(WeChatError):
-    """保存失败后没能恢复旧结果；旧图片目录保留在备份位置，需要手动处理"""
+    """保存失败后没能恢复旧结果；旧图片目录保留在 backup_path，需要手动处理"""
+
+    def __init__(self, message: str, backup_path: Optional[Path] = None):
+        super().__init__(message)
+        self.backup_path = backup_path
+        self.interrupted = False
+
+    def __str__(self) -> str:
+        text = super().__str__()
+        return f"{text}（保存期间收到过中断）" if self.interrupted else text
 
 
 @contextmanager
@@ -228,6 +237,8 @@ def _defer_sigint() -> Iterator[None]:
     """
     提交区段内收到的 Ctrl+C 先记下，区段结束、原 handler 恢复后再按原 handler 处理，
     避免两步替换之间被打断。只能在主线程安装 signal handler，其他线程直接执行。
+    区段内已有异常在传播时不再补发中断，以免 KeyboardInterrupt 盖住它（例如 RollbackError），
+    只在该异常上标记 interrupted=True，由调用方决定如何退出。
     """
     if threading.current_thread() is not threading.main_thread():
         yield
@@ -236,13 +247,20 @@ def _defer_sigint() -> Iterator[None]:
     previous = signal.signal(signal.SIGINT, lambda signum, frame: received.append(signum))
     try:
         yield
-    finally:
+    except BaseException as error:
         signal.signal(signal.SIGINT, previous)
-        if received:
-            if callable(previous):
-                previous(signal.SIGINT, None)
-            elif previous != signal.SIG_IGN:
-                raise KeyboardInterrupt
+        if received and previous != signal.SIG_IGN:
+            try:
+                error.interrupted = True
+            except AttributeError:
+                pass
+        raise
+    signal.signal(signal.SIGINT, previous)
+    if received:
+        if callable(previous):
+            previous(signal.SIGINT, None)
+        elif previous != signal.SIG_IGN:
+            raise KeyboardInterrupt
 
 
 def _recover(md_tmp: Path, new_assets: Optional[Path], assets: Path,
@@ -265,7 +283,10 @@ def _recover(md_tmp: Path, new_assets: Optional[Path], assets: Path,
             os.replace(old, assets)
     except BaseException as rollback_error:
         where = f"旧图片目录保留在 {old}，请手动移回 {assets}" if old is not None and old.exists() else f"请检查 {assets}"
-        raise RollbackError(f"保存失败（{error!r}），回滚也失败（{rollback_error!r}）：{where}") from rollback_error
+        kept = old if old is not None and old.exists() else None
+        raise RollbackError(
+            f"保存失败（{error!r}），回滚也失败（{rollback_error!r}）：{where}", backup_path=kept
+        ) from rollback_error
 
 
 def _replace_image_src(content_html: str, local: Dict[str, str]) -> str:

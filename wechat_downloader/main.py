@@ -7,7 +7,7 @@ import time
 from typing import List, Optional
 
 from .api import WeChatAPI
-from .downloader import ArticleDownloader
+from .downloader import ArticleDownloader, RollbackError
 from .fetch import VerificationRequired, WeChatError
 
 
@@ -33,6 +33,8 @@ def download_many(downloader: ArticleDownloader, urls: List[str], interval: floa
         except VerificationRequired as e:
             print(f"{prefix}✗ {e}")
             return failed + len(urls) - index + 1
+        except RollbackError:
+            raise
         except WeChatError as e:
             print(f"{prefix}✗ {url}\n    {e}")
             failed += 1
@@ -51,7 +53,32 @@ def download_many(downloader: ArticleDownloader, urls: List[str], interval: floa
     return failed
 
 
+EXIT_INTERRUPTED = 130
+
+
 def main(argv: Optional[List[str]] = None) -> int:
+    """
+    回滚失败时停止全部下载：磁盘上有需要手动恢复的备份，继续下载没有意义。
+    期间收到过 Ctrl+C 则按惯例以 130 退出，否则以 1 退出。
+    """
+    try:
+        return _main(argv)
+    except RollbackError as e:
+        print(f"✗ {e}")
+        if e.backup_path is not None:
+            print(f"    旧图片备份：{e.backup_path}")
+        return EXIT_INTERRUPTED if e.interrupted else 1
+    except KeyboardInterrupt:
+        print("\n已中断")
+        return EXIT_INTERRUPTED
+    except Exception as e:
+        if not getattr(e, "interrupted", False):
+            raise
+        print(f"✗ 保存失败：{e!r}（期间收到过中断，已停止）")
+        return EXIT_INTERRUPTED
+
+
+def _main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         description='微信公众号文章下载工具：把文章保存为 Markdown，图片下载到本地',
         formatter_class=argparse.RawDescriptionHelpFormatter,
