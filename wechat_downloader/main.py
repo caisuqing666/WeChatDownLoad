@@ -7,6 +7,7 @@ import time
 from typing import List, Optional
 
 from .api import WeChatAPI
+from .batch import PROGRESS_FILE, download_url_list, print_result, print_summary, read_url_file
 from .downloader import ArticleDownloader, RollbackError
 from .fetch import VerificationRequired, WeChatError
 
@@ -39,15 +40,7 @@ def download_many(downloader: ArticleDownloader, urls: List[str], interval: floa
             print(f"{prefix}✗ {url}\n    {e}")
             failed += 1
         else:
-            print(f"{prefix}✓ {result.article.title}\n    → {result.path}")
-            if result.failed_images:
-                print(f"    ! {len(result.failed_images)} 张图片下载失败，已保留原始链接：")
-                for image_url in result.failed_images:
-                    print(f"      {image_url}")
-            if result.kept_images:
-                print(f"    ! {len(result.kept_images)} 张图片这次下载失败，沿用了上次下载的本地文件：")
-                for image_url in result.kept_images:
-                    print(f"      {image_url}")
+            print_result(prefix, result)
         if index < len(urls) and interval > 0:
             time.sleep(interval)
     return failed
@@ -90,6 +83,9 @@ def _main(argv: Optional[List[str]] = None) -> int:
   # 一次下载多篇
   python -m wechat_downloader.main URL1 URL2 URL3 -o ~/Documents/公众号
 
+  # 按链接清单批量下载（每行一个链接，# 开头为注释），中断后重新运行会跳过已下载的
+  python -m wechat_downloader.main --urls links.txt -o ~/Documents/公众号 --delay 5
+
   # 用历史文章接口批量下载（需要从微信客户端抓到的 token，见 README）
   python -m wechat_downloader.main --url URL --token TOKEN --batch --count 10
         """
@@ -99,6 +95,10 @@ def _main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument('--output', '-o', default='downloads', help='输出目录（默认: downloads）')
     parser.add_argument('--no-images', action='store_true', help='不下载图片，Markdown 里保留微信原始图片链接')
     parser.add_argument('--interval', type=float, default=2.0, help='多篇下载之间的间隔秒数（默认: 2）')
+    parser.add_argument('--urls', dest='urls_file', metavar='FILE',
+                        help=f'链接清单文件：每行一个链接，忽略空行和 # 注释；进度记在输出目录的 {PROGRESS_FILE}')
+    parser.add_argument('--delay', type=float, default=3.0, help='--urls 模式两篇之间的基础等待秒数（默认: 3）')
+    parser.add_argument('--jitter', type=float, default=2.0, help='--urls 模式在基础等待上再随机加 0~N 秒（默认: 2）')
     parser.add_argument('--token', '-t', help='历史文章接口 token（仅 --batch 使用）')
     parser.add_argument('--token-clipboard', action='store_true', help='从剪贴板读取token')
     parser.add_argument('--batch', '-b', action='store_true', help='通过历史文章接口批量下载该公众号文章（需要 token）')
@@ -107,6 +107,12 @@ def _main(argv: Optional[List[str]] = None) -> int:
 
     args = parser.parse_args(argv)
     urls = args.urls + args.url
+    if args.urls_file:
+        if urls or args.batch:
+            parser.error("--urls 不能和直接给出的链接或 --batch 同时使用")
+        if args.delay < 0 or args.jitter < 0:
+            parser.error("--delay 和 --jitter 不能为负数")
+        return _download_url_file(args)
     if not urls:
         parser.error("请至少提供一个文章链接")
 
@@ -144,6 +150,21 @@ def _main(argv: Optional[List[str]] = None) -> int:
     failed = download_many(downloader, links, args.interval)
     print(f"\n完成：成功 {len(links) - failed} 篇，失败 {failed} 篇")
     return 1 if failed else 0
+
+
+def _download_url_file(args) -> int:
+    try:
+        urls = read_url_file(args.urls_file)
+    except (OSError, UnicodeDecodeError) as e:
+        print(f"错误: 无法读取链接清单 {args.urls_file}：{e}")
+        return 1
+    if not urls:
+        print(f"错误: {args.urls_file} 里没有文章链接")
+        return 1
+    downloader = ArticleDownloader(output_dir=args.output, download_images=not args.no_images)
+    result = download_url_list(downloader, urls, delay=args.delay, jitter=args.jitter)
+    print_summary(result, downloader.output_dir / PROGRESS_FILE)
+    return 1 if result.failed or result.stopped else 0
 
 
 if __name__ == '__main__':

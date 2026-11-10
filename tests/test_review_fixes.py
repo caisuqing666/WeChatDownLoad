@@ -66,22 +66,6 @@ def test_1_short_link_account_info_reads_biz_from_page():
     assert info["account_name"] == "测试号"
 
 
-def test_1_short_link_article_list_simple_uses_page_biz(monkeypatch):
-    api = WeChatAPI()
-    api.fetcher = FakeFetcher(make_page("<p>正文</p>"))
-    requested = []
-
-    class Response:
-        text = ""
-
-        def raise_for_status(self):
-            pass
-
-    monkeypatch.setattr(api.session, "get", lambda url, **kw: requested.append(url) or Response())
-    api.get_article_list_simple(SHORT_URL)
-    assert requested and "__biz=MzI4NjAxNjY4Nw==" in requested[0]
-
-
 # 2) 图片：无 alt、alt 在 src 前面都要正确
 
 IMAGES_HTML = (

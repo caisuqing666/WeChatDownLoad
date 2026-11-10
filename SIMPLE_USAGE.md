@@ -3,7 +3,7 @@
 ## ✨ 特点
 
 - ✅ **无需安装证书**
-- ✅ **无需token**（批量下载也不需要！）
+- ✅ **无需token**（按链接清单批量下载也不需要）
 - ✅ **代码简洁**（核心代码不到50行）
 - ✅ **支持批量下载**
 
@@ -27,10 +27,9 @@ python example_usage.py
 - 输入文章URL
 - 自动下载为Markdown格式
 
-**选项2：批量下载公众号文章**
-- 输入公众号任意一篇文章URL
-- 输入要下载的数量（默认20篇）
-- 自动批量下载所有文章
+**选项2：按链接清单批量下载**
+- 准备一个文本文件，每行一个文章链接（空行和 # 开头的注释会被忽略）
+- 输入文件路径，逐篇下载；已下载的自动跳过，中断后重新运行会接着下
 
 ## 📝 代码示例
 
@@ -52,30 +51,19 @@ file_path = downloader.download_article(article_data)
 print(f"下载完成: {file_path}")
 ```
 
-### 批量下载公众号文章
+### 按链接清单批量下载
 
 ```python
-from wechat_downloader.api import WeChatAPI
+from wechat_downloader.batch import download_url_list, read_url_file
 from wechat_downloader.downloader import ArticleDownloader
 
-# 初始化（无需token）
-api = WeChatAPI()
 downloader = ArticleDownloader(output_dir="downloads")
-
-# 获取公众号信息
-article_url = "https://mp.weixin.qq.com/s/xxxxx"
-account_info = api.get_account_info(article_url)
-
-# 获取文章列表（无需token）
-articles = api.get_article_list_simple(article_url, max_count=20)
-
-# 批量下载
-for article in articles:
-    article_data = api.get_article_content(article['link'])
-    downloader.download_article(article_data, account_name=account_info['account_name'])
-
-print("批量下载完成！")
+urls = read_url_file("links.txt")  # 每行一个链接，忽略空行和 # 注释，自动去重
+result = download_url_list(downloader, urls, delay=3, jitter=2)
+print(f"新下载 {result.downloaded} 篇，跳过 {result.skipped} 篇，失败 {len(result.failed)} 篇")
 ```
+
+命令行等价写法：`python -m wechat_downloader.main --urls links.txt`
 
 ## 🎯 核心API
 
@@ -83,7 +71,6 @@ print("批量下载完成！")
 
 - `get_account_info(article_url)` - 获取公众号信息
 - `get_article_content(article_url)` - 获取单篇文章内容
-- `get_article_list_simple(article_url, max_count)` - **新增！无需token获取文章列表**
 
 ### ArticleDownloader
 
@@ -91,10 +78,10 @@ print("批量下载完成！")
 
 ## 🔧 优化内容
 
-1. **新增 `get_article_list_simple()` 方法**
-   - 通过网页解析获取文章列表
-   - 完全无需token
-   - 代码简洁高效
+1. **按链接清单批量下载（`wechat_downloader.batch`）**
+   - 用户自己整理文章链接，逐篇下载
+   - 限速 + 随机抖动，遇到验证页立即停止
+   - 断点续传，已下载的自动跳过
 
 2. **简化 `download_article()` 方法**
    - 减少重复代码
@@ -123,27 +110,5 @@ publish_time: 发布时间
 
 ## ⚠️ 注意事项
 
-1. 批量下载时，文章数量取决于公众号主页可见的文章数
-2. 部分需要登录的公众号可能无法获取完整文章列表
-3. 建议添加适当的延迟，避免请求过快
-
-## 🆚 对比
-
-### 之前：
-- ❌ 批量下载需要token
-- ❌ 需要从微信浏览器手动获取token
-- ❌ 代码复杂，难以理解
-
-### 现在：
-- ✅ 完全无需token
-- ✅ 只需提供文章URL
-- ✅ 代码简洁，易于使用
-
-## 📞 技术原理
-
-通过访问公众号主页，从HTML中提取文章链接列表，而不是调用需要认证的API接口。这种方式：
-
-- 不需要任何认证信息
-- 不需要安装证书
-- 代码更简单
-- 更容易维护
+1. 不登录无法自动获取某个公众号的历史文章列表，批量下载需要自己整理链接
+2. 请保留默认的请求间隔，请求过快会触发“环境异常”验证页

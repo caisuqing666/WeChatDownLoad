@@ -400,10 +400,6 @@ def batch_download_with_token(article_url: str, token: str, count: int = 20):
     articles = api.get_article_list(account_info['biz_id'], offset=0, count=count)
     
     if not articles:
-        print("⚠️  token接口获取失败，尝试网页解析模式...")
-        articles = api.get_article_list_simple(article_url, max_count=count)
-    
-    if not articles:
         print("错误: 无法获取文章列表")
         return
     

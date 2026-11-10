@@ -58,6 +58,22 @@ def article_id(article: Article) -> str:
         key = f"{biz}:{mid}:{idx}"
     else:
         key = next((_short_code(url) for url in (article.url, article.request_url) if _short_code(url)), article.url)
+    return _id_from_key(key)
+
+
+def link_article_id(url: str) -> str:
+    """
+    不请求页面、只看链接能确定的文章 ID，确定不了返回空串。
+    只有带 __biz 和 mid 的长链接才行：短链接下载后的 ID 取决于页面变量，事先算不出来。
+    """
+    query = parse_qs(urlsplit(url).query)
+    biz, mid = query.get("__biz", [""])[0], query.get("mid", [""])[0]
+    if not (biz and mid):
+        return ""
+    return _id_from_key(f"{biz}:{mid}:{query.get('idx', [''])[0] or '1'}")
+
+
+def _id_from_key(key: str) -> str:
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
 
 

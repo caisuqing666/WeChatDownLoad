@@ -1,7 +1,6 @@
 """
 微信公众号API接口封装
 """
-import re
 import json
 import requests
 from typing import Dict, List, Optional
@@ -50,93 +49,6 @@ class WeChatAPI:
             'article_url': article_url,
         }
 
-    def get_article_list_simple(self, article_url: str, max_count: int = 20) -> List[Dict]:
-        """
-        无需token，通过网页解析获取文章列表（简化版）
-
-        Args:
-            article_url: 任意一篇文章URL（用于获取公众号信息）
-            max_count: 最大获取数量
-
-        Returns:
-            文章列表
-        """
-        account = self.get_account_info(article_url)
-        biz_id = account['biz_id'] if account else ""
-        if not biz_id:
-            print("无法从文章页面读取公众号ID")
-            return []
-
-        # 访问公众号主页
-        profile_url = f"{self.BASE_URL}/mp/profile_ext?action=home&__biz={biz_id}"
-
-        try:
-            response = self.session.get(profile_url, timeout=15)
-            response.raise_for_status()
-            html = response.text
-
-            # 从HTML中提取文章链接
-            articles = []
-            found_urls = set()
-
-            # 方法1: 提取所有/s/链接
-            url_pattern = r'https?://mp\.weixin\.qq\.com/s/[a-zA-Z0-9_-]+'
-            urls = re.findall(url_pattern, html)
-
-            for url in urls:
-                base_url = url.split('?')[0]
-                if base_url not in found_urls and len(articles) < max_count:
-                    found_urls.add(base_url)
-
-                    # 添加biz参数
-                    full_url = f"{base_url}?__biz={biz_id}" if '?' not in url else url
-
-                    articles.append({
-                        'title': f'文章 {len(articles) + 1}',
-                        'link': full_url,
-                        'author': ''
-                    })
-
-            # 方法2: 尝试提取标题（可选）
-            try:
-                # 匹配文章数据结构
-                data_pattern = r'"content_url":"([^"]+)"[^}]*"title":"([^"]+)"'
-                matches = re.findall(data_pattern, html)
-
-                for idx, (url, title) in enumerate(matches):
-                    if len(articles) >= max_count:
-                        break
-                    url = url.replace('\\/', '/')
-                    base_url = url.split('?')[0] if '?' in url else url
-
-                    if base_url not in found_urls:
-                        found_urls.add(base_url)
-                        full_url = f"{base_url}?__biz={biz_id}" if '?' not in url else url
-
-                        # 解码title
-                        try:
-                            title = title.encode('utf-8').decode('unicode_escape')
-                        except:
-                            pass
-
-                        if idx < len(articles):
-                            articles[idx]['title'] = title
-                        else:
-                            articles.append({
-                                'title': title,
-                                'link': full_url,
-                                'author': ''
-                            })
-            except Exception as e:
-                print(f"提取标题失败: {e}")
-
-            print(f"从网页中找到 {len(articles)} 篇文章")
-            return articles
-
-        except Exception as e:
-            print(f"获取文章列表失败: {e}")
-            return []
-
     def get_article_list(self, biz_id: str, offset: int = 0, count: int = 10) -> List[Dict]:
         """
         获取公众号文章列表（需要token的旧方法，保留向后兼容）
@@ -150,7 +62,7 @@ class WeChatAPI:
             文章列表
         """
         if not self.token:
-            print("⚠️ 提示: 使用get_article_list_simple()方法可以无需token获取文章列表")
+            print("⚠️ 提示: 历史文章接口需要从微信客户端抓到的 token")
             return []
 
         url = f"{self.BASE_URL}/mp/profile_ext"

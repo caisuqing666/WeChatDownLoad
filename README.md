@@ -22,6 +22,36 @@ python -m wechat_downloader.main URL1 URL2 URL3 -o ~/Documents/公众号
 
 输出位置：`<输出目录>/<公众号名称>/<发布日期>_<标题>_<文章ID>.md`，图片在同目录的同名 `.assets/` 文件夹里。文章ID 是由链接（biz+mid+idx，或短链接路径）算出的 8 位标识：同一篇重复下载会覆盖原文件，不同文章即使同名也不会冲突。单张图片下载失败时保留原始链接并提示。
 
+### 按链接清单批量下载（`--urls`）
+
+不登录拿不到某个号的历史文章列表，批量下载需要自己整理链接：
+
+```bash
+# links.txt：每行一个链接，空行和 # 开头的行会被忽略，重复的链接只下载一次
+python -m wechat_downloader.main --urls links.txt -o ~/Documents/公众号
+
+# 每两篇之间等待 --delay 秒再随机加 0~--jitter 秒（默认 3 + 0~2 秒）
+python -m wechat_downloader.main --urls links.txt --delay 5 --jitter 3
+```
+
+- 断点续传：进度记在输出目录的 `.wechat_progress.json`（每篇结束后原子写入）。中途 Ctrl+C、断网或遇到验证页后，重新运行同一命令即可，已成功的自动跳过、不再请求。带 `__biz`/`mid` 的长链接即使没有进度文件，也会按文件名里的文章ID 认出已下载的文件。
+- 遇到“环境异常”验证页立即停止并提示剩余篇数，稍后再跑同一命令继续。
+- 单篇失败（文章已删除、网络错误等）记入进度文件后继续下一篇，结束时汇总列出；下次运行会重试失败的文章。全部成功退出码为 0，有失败或因验证页停止为 1，Ctrl+C 为 130。
+
+进度文件格式（键是规范化后的链接）：
+
+```json
+{
+  "version": 1,
+  "articles": {
+    "https://mp.weixin.qq.com/s/xxx": {"status": "done", "id": "52a063f7", "path": "某公众号/2024-12-02_标题_52a063f7.md", "title": "标题", "updated_at": "2026-11-10T19:00:00+08:00"},
+    "https://mp.weixin.qq.com/s/yyy": {"status": "failed", "error": "文章不可用：该内容已被发布者删除", "attempts": 1, "updated_at": "2026-11-10T19:00:05+08:00"}
+  }
+}
+```
+
+### 注意事项
+
 遇到“环境异常”验证页时程序会停止后续请求；稍等一段时间，或在浏览器里打开该链接完成验证后再试。长链接缺少 `chksm` 等参数时微信可能返回“未知错误”页，请复制完整链接或改用 /s/ 短链接。图片/视频分享类消息暂不支持。
 
 运行测试：`pip install pytest && python -m pytest tests`。`tests/fixtures/real/` 是真实抓取的文章页面（用 `tests/fixtures/trim_page.py` 去掉了无关的内联 JS/CSS），解析逻辑可以离线测试。
