@@ -19,12 +19,18 @@ from .fetch import VerificationRequired, WeChatError, normalize_url
 ALBUM_ENDPOINT = "https://mp.weixin.qq.com/mp/appmsgalbum"
 PAGE_SIZE = 20  # 接口每页最多返回 20 条，count 再大也没用
 MIN_LIST_DELAY = 3.0
-CACHE_VERSION = 1
+PAGE_RETRIES = 2
+# 版本 1 的缓存在空页或整页重复时也会标记完成，不能信任，读到时从头重新翻
+CACHE_VERSION = 2
 RET_BAD_ALBUM = 10004
 
 
 class AlbumError(WeChatError):
     """合集接口返回了 ret≠0 等明确错误"""
+
+
+class AlbumPaginationError(WeChatError):
+    """continue_flag=1 但重试后仍没有新文章"""
 
 
 def parse_album_url(url: str) -> Tuple[str, str]:
@@ -121,6 +127,9 @@ def load_cache(output_dir: Path, biz: str, album_id: str) -> Optional[AlbumListi
     path = cache_path(output_dir, album_id)
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict) or data.get("version") != CACHE_VERSION:
+            print(f"! 合集列表缓存 {path} 是旧版本，无法确认是否翻完，将从头重新翻页（已下载的文章仍会跳过）")
+            return None
         listing = AlbumListing.from_json(data)
     except FileNotFoundError:
         return None
@@ -162,15 +171,17 @@ def list_album(get_page: Callable[[Dict[str, str]], Tuple[str, str]], listing: A
     """
     从 listing.cursor（为空则从首页）翻到底，结果追加到 listing。
     游标是上一页最后一条的 msgid+itemidx，必须精确：itemidx 不对时接口返回空列表却仍说 continue_flag=1。
-    continue_flag≠1、列表为空、或一页里没有新文章时结束。每页处理完调用 on_page，便于中途停下后续翻。
-    两次请求之间至少等 MIN_LIST_DELAY 秒。
+    只有 continue_flag≠1 才算翻完。continue_flag=1 却没有新文章（空列表或整页重复）是分页异常：
+    游标不动，按退避重试 PAGE_RETRIES 次，仍然没有就抛 AlbumPaginationError，listing 保持未完成。
+    每页拿到新文章后调用 on_page，便于中途停下后续翻。两次请求之间至少等 MIN_LIST_DELAY 秒。
     """
     sleep = sleep or time.sleep
     uniform = uniform or random.uniform
     seen = {(a["msgid"], a["itemidx"]) for a in listing.articles}
+    failures = 0
     while not listing.complete:
         if listing.requests:
-            sleep(max(delay, MIN_LIST_DELAY) + (uniform(0, jitter) if jitter > 0 else 0))
+            sleep(max(delay, MIN_LIST_DELAY) * 2 ** failures + (uniform(0, jitter) if jitter > 0 else 0))
         resp = parse_album_response(*get_page(album_params(listing.biz, listing.album_id, listing.cursor)))
         listing.requests += 1
         info = resp.get("base_info")
@@ -187,11 +198,21 @@ def list_album(get_page: Callable[[Dict[str, str]], Tuple[str, str]], listing: A
                 seen.add(key)
                 listing.articles.append(entry)
                 new += 1
-        if items:
-            last = items[-1]
-            listing.cursor = (str(last["msgid"]), str(last.get("itemidx") or "1"))
-        if str(resp.get("continue_flag")) != "1" or not items or not new:
-            listing.complete = True
+        finished = str(resp.get("continue_flag")) != "1"
+        if not new and not finished:
+            failures += 1
+            if failures > PAGE_RETRIES:
+                raise AlbumPaginationError(
+                    f"合集列表翻页异常：接口说还有下一页，但连续 {failures} 次没有返回新文章"
+                    f"（已拿到 {len(listing.articles)} 篇）。列表已按未完成保存，请稍后重新运行同一命令，"
+                    f"会从上次的位置接着翻；一直如此可加 --refresh-album 从头翻"
+                )
+            continue
+        failures = 0
+        if new:
+            last = listing.articles[-1]
+            listing.cursor = (last["msgid"], last["itemidx"])
+        listing.complete = finished
         if on_page:
             on_page(listing)
     return listing

@@ -12,7 +12,7 @@ import wechat_downloader.batch as batch_module
 import wechat_downloader.downloader as downloader_module
 from wechat_downloader import main as cli
 from wechat_downloader.album import (
-    AlbumError, AlbumListing, cache_path, list_album, load_cache, parse_album_response, parse_album_url,
+    AlbumError, AlbumListing, AlbumPaginationError, cache_path, list_album, load_cache, parse_album_response, parse_album_url,
 )
 from wechat_downloader.batch import PROGRESS_FILE
 from wechat_downloader.fetch import VerificationRequired, check_article_page
@@ -111,26 +111,59 @@ def test_unnumbered_album_without_pos_num():
     assert len(server.requests) == 2
 
 
-def test_cursor_uses_last_itemidx_and_empty_list_ends():
-    listing, server, _ = run(JINFANGZI)
+def test_empty_page_with_continue_flag_is_not_completion_and_resumes_from_cursor():
+    saved = []
+    listing = AlbumListing(biz=JINFANGZI[0], album_id=JINFANGZI[1])
+    server = AlbumServer(JINFANGZI[2])
+    with pytest.raises(AlbumPaginationError, match="稍后重新运行"):
+        run(JINFANGZI, server=server, listing=listing, on_page=lambda l: saved.append(l.to_json()))
     # p1 最后一条是次条文章（itemidx=2），游标必须带 2 才能拿到 p2
     assert (server.requests[1]["begin_msgid"], server.requests[1]["begin_itemidx"]) == ("2247514774", "2")
-    # p2 之后没有更多 fixture，服务端回真实的空列表响应（continue_flag=1 但没有 article_list），应结束
-    assert len(server.requests) == 3 and listing.complete
-    assert len(listing.articles) == 40
-    assert listing.cursor == ("2247514466", "2")
+    # p2 之后服务端回真实的空列表响应（continue_flag=1 但没有 article_list）：同一游标共请求 1+2 次后停下
+    assert len(server.requests) == 2 + 1 + album_module.PAGE_RETRIES
+    assert all((r["begin_msgid"], r["begin_itemidx"]) == ("2247514466", "2") for r in server.requests[2:])
+    assert not listing.complete and listing.cursor == ("2247514466", "2") and len(listing.articles) == 40
+    assert saved[-1]["complete"] is False and saved[-1]["cursor"] == ["2247514466", "2"]
+
+    resumed = AlbumListing.from_json(saved[-1])
+    server = AlbumServer(JINFANGZI[2])
+    server.pages[("2247514466", "2")] = fixture("kanlixiang-p6.json")
+    listing, server, _ = run(JINFANGZI, server=server, listing=resumed)
+    assert len(server.requests) == 1 and listing.complete and len(listing.articles) == 46
 
 
-def test_dedup_and_stop_when_page_has_nothing_new():
+def test_retries_back_off_and_recover():
+    server = AlbumServer(RWKV[2], overrides={2: (JSON_TYPE, fixture("empty.json"))})
+    listing, server, sleeps = run(RWKV, server=server, delay=3)
+    assert listing.complete and len(listing.articles) == 31
+    assert sleeps == [3.0, 6.0]
+
+
+def test_duplicate_page_with_continue_flag_is_not_completion():
     p1 = fixture("kanlixiang-p1.json")
     data = json.loads(p1)
     items = data["getalbum_resp"]["article_list"]
     data["getalbum_resp"]["article_list"] = items + items[:3]
-    server = AlbumServer(KANLIXIANG[2], overrides={1: (JSON_TYPE, json.dumps(data, ensure_ascii=False)),
-                                                   2: (JSON_TYPE, p1)})
-    listing, server, _ = run(KANLIXIANG, server=server)
-    assert len(listing.articles) == 10
-    assert len(server.requests) == 2 and listing.complete
+    retries = album_module.PAGE_RETRIES
+    overrides = {1: (JSON_TYPE, json.dumps(data, ensure_ascii=False))}
+    overrides.update({n: (JSON_TYPE, p1) for n in range(2, 3 + retries)})
+    listing = AlbumListing(biz=KANLIXIANG[0], album_id=KANLIXIANG[1])
+    with pytest.raises(AlbumPaginationError):
+        run(KANLIXIANG, server=AlbumServer(KANLIXIANG[2], overrides=overrides), listing=listing)
+    assert not listing.complete and len(listing.articles) == 10
+    assert listing.cursor == ("2650931254", "1")
+
+    listing, server, _ = run(KANLIXIANG, listing=listing)
+    assert listing.complete and len(listing.articles) == 96 and len(server.requests) == 5
+
+
+def test_old_cache_version_is_not_trusted(tmp_path, capsys):
+    biz, album_id, _ = RWKV
+    old = {"version": 1, "biz": biz, "album_id": album_id, "complete": True, "cursor": None,
+           "articles": [{"msgid": "1", "itemidx": "1", "url": "https://mp.weixin.qq.com/s?__biz=x&mid=1"}]}
+    cache_path(tmp_path, album_id).write_text(json.dumps(old), encoding="utf-8")
+    assert load_cache(tmp_path, biz, album_id) is None
+    assert "旧版本" in capsys.readouterr().out
 
 
 def test_single_article_object_is_accepted():
@@ -260,6 +293,22 @@ def test_cli_album_risk_control_keeps_partial_cache(tmp_path, monkeypatch, no_sl
     assert cli.main(["--album", ALBUM_URL, "-o", str(out_dir), "--no-images"]) == 0
     assert len(fetcher.server.requests) == 1 and fetcher.server.requests[0]["begin_msgid"] == "2247486394"
     assert len(fetcher.article_requests) == 31
+
+
+def test_cli_album_pagination_anomaly_keeps_cache_incomplete(tmp_path, monkeypatch, no_sleep, capsys):
+    out_dir = tmp_path / "out"
+    empty = (JSON_TYPE, fixture("empty.json"))
+    fetcher = AlbumSiteFetcher(AlbumServer(RWKV[2], overrides={n: empty for n in range(2, 5)}))
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--album", ALBUM_URL, "-o", str(out_dir)]) == 1
+    assert fetcher.article_requests == [] and "翻页异常" in capsys.readouterr().out
+    cached = json.loads(cache_path(out_dir, RWKV[1]).read_text(encoding="utf-8"))
+    assert cached["complete"] is False and cached["cursor"] == ["2247486394", "1"]
+
+    fetcher = AlbumSiteFetcher(AlbumServer(RWKV[2]))
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--album", ALBUM_URL, "-o", str(out_dir), "--no-images"]) == 0
+    assert len(fetcher.server.requests) == 1 and len(fetcher.article_requests) == 31
 
 
 def test_cli_album_bad_id_and_list_delay(tmp_path, monkeypatch, no_sleep, capsys):
