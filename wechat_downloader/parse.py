@@ -7,7 +7,6 @@ import re
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import List, Optional
-from urllib.parse import parse_qs, urlsplit
 
 from bs4 import BeautifulSoup, Tag
 
@@ -39,6 +38,7 @@ class Article:
     author: str = ""
     account_name: str = ""
     biz: str = ""
+    user_name: str = ""
     publish_time: Optional[datetime] = None
     description: str = ""
     cover: str = ""
@@ -57,6 +57,7 @@ class Article:
             "author": self.author,
             "account_name": self.account_name,
             "biz": self.biz,
+            "user_name": self.user_name,
             "publish_time": self.publish_timestamp,
             "description": self.description,
             "cover": self.cover,
@@ -223,10 +224,6 @@ def parse_article(page: str, url: str) -> Article:
     account_name = extract_js_var(page, "nickname") or _text(soup, "#js_name")
     author = extract_js_var(page, "author") or _text(soup, "#js_author_name")
 
-    biz = extract_js_var(page, "biz")
-    if not biz:
-        biz = parse_qs(urlsplit(html.unescape(url)).query).get("__biz", [""])[0]
-
     if not content.get_text(strip=True) and not images:
         raise ParseError("文章正文为空")
 
@@ -235,7 +232,8 @@ def parse_article(page: str, url: str) -> Article:
         title=title,
         author=author,
         account_name=account_name,
-        biz=biz,
+        biz=extract_js_var(page, "biz"),
+        user_name=extract_js_var(page, "user_name"),
         publish_time=_parse_time(page),
         description=extract_js_var(page, "msg_desc"),
         cover=_normalize_src(extract_js_var(page, "msg_cdn_url")),

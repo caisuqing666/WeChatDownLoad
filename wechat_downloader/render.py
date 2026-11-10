@@ -44,19 +44,23 @@ def _yaml_value(value) -> str:
 
 
 def front_matter(article: Article) -> str:
-    fields = {
+    required = {
         "title": article.title,
         "author": article.author,
+        "url": article.url,
+        "date": article.publish_time.isoformat() if article.publish_time else "",
+    }
+    optional = {
         "account": article.account_name,
         "biz": article.biz,
-        "url": article.url,
+        "user_name": article.user_name,
         "source_url": article.source_url,
-        "publish_time": article.publish_time.isoformat() if article.publish_time else "",
         "description": article.description,
         "cover": article.cover,
         "downloaded_at": datetime.now(tz=CHINA_TZ).isoformat(timespec="seconds"),
     }
-    lines = [f"{key}: {_yaml_value(value)}" for key, value in fields.items() if value]
+    lines = [f"{key}: {_yaml_value(value)}" for key, value in required.items()]
+    lines += [f"{key}: {_yaml_value(value)}" for key, value in optional.items() if value]
     return "---\n" + "\n".join(lines) + "\n---\n"
 
 

@@ -3,6 +3,7 @@
 """
 import html
 import re
+from typing import Tuple
 from urllib.parse import urlsplit, urlunsplit
 
 import requests
@@ -23,6 +24,7 @@ UNAVAILABLE_MARKERS = (
     "该公众号已迁移",
     "内容已被删除",
 )
+INVALID_LINK_MARKERS = ("未知错误，请稍后再试", "失效的验证页面")
 # 微信的错误/提示页统一用 weui-msg__title 显示原因，如“参数错误”“链接已过期”
 _MSG_TITLE = re.compile(r'class="weui-msg__title[^"]*"[^>]*>([^<]*)<')
 
@@ -66,6 +68,11 @@ def check_article_page(page: str) -> None:
     for marker in UNAVAILABLE_MARKERS:
         if marker in page:
             raise ArticleUnavailable(f"文章不可用：{marker}")
+    if any(marker in page for marker in INVALID_LINK_MARKERS):
+        raise ArticleUnavailable(
+            "微信返回了“未知错误，请稍后再试”页面：链接可能不完整或已失效"
+            "（例如长链接缺少 chksm 参数）。请从微信里复制完整链接，或改用 /s/ 短链接。"
+        )
     notice = _MSG_TITLE.search(page)
     if notice and notice.group(1).strip():
         raise ArticleUnavailable(f"文章不可用：微信提示“{html.unescape(notice.group(1).strip())}”，请检查链接是否完整")
@@ -99,3 +106,17 @@ class Fetcher:
         page = response.text
         check_article_page(page)
         return page
+
+    def get_image(self, url: str) -> Tuple[bytes, str]:
+        """返回图片内容和 Content-Type"""
+        try:
+            response = self.session.get(
+                url, timeout=self.timeout, headers={"Referer": "https://mp.weixin.qq.com/"}
+            )
+            response.raise_for_status()
+        except requests.RequestException as e:
+            raise WeChatError(f"下载图片失败：{e}") from e
+        content_type = response.headers.get("Content-Type", "")
+        if content_type.startswith("text/"):
+            raise WeChatError(f"下载图片失败：返回的是 {content_type} 而不是图片")
+        return response.content, content_type
