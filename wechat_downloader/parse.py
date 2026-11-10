@@ -74,7 +74,12 @@ def _decode_js_string(raw: str) -> str:
             return chr(int(esc[1:], 16))
         return _SIMPLE_ESCAPES.get(esc, esc)
 
-    return html.unescape(_JS_ESCAPE.sub(repl, raw)).strip()
+    return _join_surrogates(html.unescape(_JS_ESCAPE.sub(repl, raw))).strip()
+
+
+def _join_surrogates(text: str) -> str:
+    """JS 用 UTF-16 代理对表示 emoji（\\uD83D\\uDE00），逐个 chr() 后要合并；孤立代理换成 U+FFFD，否则写文件时会报错"""
+    return text.encode("utf-16-le", "surrogatepass").decode("utf-16-le", "replace")
 
 
 def extract_js_var(page: str, name: str) -> str:
@@ -164,18 +169,20 @@ def _clean_images(content: Tag) -> List[str]:
 def _flatten_code_blocks(soup: BeautifulSoup, content: Tag) -> None:
     """
     微信代码块是 <pre><code>第1行</code><code>第2行</code>...</pre>，
-    直接转换会把所有行挤成一行；这里合并成标准的单个 <code>。
+    直接转换会把所有行挤成一行；这里合并成标准的单个 <code>，<br> 一律视为换行。
     """
     for pre in content.find_all("pre"):
-        codes = pre.find_all("code")
-        if not codes:
-            continue
+        codes = pre.find_all("code") or [pre]
         lines = []
         for code in codes:
             for br in code.find_all("br"):
-                br.replace_with("")
-            lines.append(code.get_text())
-        text = "\n".join(lines) if len(codes) > 1 else codes[0].get_text()
+                br.replace_with("\n")
+            line = code.get_text()
+            # 逐行格式里空行写成 <code><br></code>，行尾的 <br> 只是占位
+            if len(codes) > 1 and line.endswith("\n"):
+                line = line[:-1]
+            lines.append(line)
+        text = "\n".join(lines)
         lang = (pre.get("data-lang") or "").strip()
         new_code = soup.new_tag("code")
         if lang:

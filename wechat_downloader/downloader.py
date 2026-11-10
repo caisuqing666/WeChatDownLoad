@@ -2,7 +2,9 @@
 单篇文章下载：抓取 -> 解析 -> 下载图片 -> 写出 Markdown
 """
 import dataclasses
+import hashlib
 import re
+import shutil
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -19,14 +21,36 @@ from .render import render_markdown
 _WINDOWS_RESERVED = {"CON", "PRN", "AUX", "NUL", *(f"COM{i}" for i in range(1, 10)), *(f"LPT{i}" for i in range(1, 10))}
 
 
-def safe_filename(name: str, max_length: int = 80) -> str:
+def safe_filename(name: str, max_length: int = 80, max_bytes: int = 150) -> str:
+    """max_bytes 按 UTF-8 计：多数文件系统限制单个文件名 255 字节，还要给日期、ID 和 .assets 后缀留余量"""
     name = unicodedata.normalize("NFC", name)
     name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", name)
     name = re.sub(r"\s+", " ", name).strip().strip(".")
-    name = name[:max_length].rstrip(" .")
+    name = name[:max_length]
+    while len(name.encode("utf-8")) > max_bytes:
+        name = name[:-1]
+    name = name.rstrip(" .")
     if not name or name.upper() in _WINDOWS_RESERVED:
         name = f"_{name}" if name else "未命名"
     return name
+
+
+def article_id(article: Article) -> str:
+    """
+    由链接派生的 8 位稳定标识：同一篇文章（同 biz+mid+idx，或同一短链接）总是相同，
+    不同文章即使同号同日同标题也不同。
+    """
+    parts = urlsplit(article.url)
+    query = parse_qs(parts.query)
+    mid, idx = query.get("mid", [""])[0], query.get("idx", ["1"])[0]
+    if mid:
+        biz = article.biz or query.get("__biz", [""])[0]
+        key = f"{biz}:{mid}:{idx}"
+    elif parts.path.startswith("/s/"):
+        key = parts.path[len("/s/"):].strip("/")
+    else:
+        key = article.url
+    return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
 
 
 _MARKDOWN_UNSAFE = set(" ()[]<>%#")
@@ -74,7 +98,7 @@ class ArticleDownloader:
 
     def article_stem(self, article: Article) -> str:
         when = article.publish_time or datetime.now(tz=CHINA_TZ)
-        return f"{when.strftime('%Y-%m-%d')}_{safe_filename(article.title)}"
+        return f"{when.strftime('%Y-%m-%d')}_{safe_filename(article.title)}_{article_id(article)}"
 
     def save(self, article: Article, download_images: Optional[bool] = None) -> DownloadResult:
         if download_images is None:
@@ -95,6 +119,9 @@ class ArticleDownloader:
     def _save_images(self, urls: List[str], folder: Path, assets_name: str):
         """返回 (原始链接 -> Markdown 里用的相对路径, 下载失败的链接)；失败的图片保留原始链接"""
         assets = folder / assets_name
+        # 重复下载同一篇时清掉上次的图片，保证结果和第一次一致
+        if assets.is_dir():
+            shutil.rmtree(assets)
         local: Dict[str, str] = {}
         failed: List[str] = []
         for index, url in enumerate(urls, 1):

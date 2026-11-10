@@ -119,7 +119,7 @@ def test_download_without_images_keeps_remote_links(tmp_path, page):
     fetcher = FakeFetcher(page)
     downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=fetcher, download_images=False)
     result = downloader.download(SHORT_URL)
-    assert result.path == tmp_path / "测试公众号 & 朋友" / "2024-12-02_测试文章：_引号_ 与 '单引号'.md"
+    assert result.path == tmp_path / "测试公众号 & 朋友" / "2024-12-02_测试文章：_引号_ 与 '单引号'_61a42e93.md"
     assert result.path.read_text(encoding="utf-8").startswith("---\n")
     assert [p.name for p in result.path.parent.iterdir()] == [result.path.name]
     assert fetcher.image_requests == []
