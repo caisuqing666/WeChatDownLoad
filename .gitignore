@@ -7,7 +7,6 @@ __pycache__/
 build/
 develop-eggs/
 dist/
-downloads/
 eggs/
 .eggs/
 lib/
@@ -38,7 +37,7 @@ env/
 .AppleDouble
 .LSOverride
 
-# Downloads
+# 命令行默认输出目录（-o 未指定时）
 downloads/
 *.md.bak
 
@@ -48,3 +47,6 @@ downloads/
 # Chrome Extension
 chrome_extension/icons/*.png
 !chrome_extension/icons/icon*.png
+
+# 扩展测试依赖
+node_modules/

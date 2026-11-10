@@ -1,19 +1,15 @@
 {
   "manifest_version": 3,
-  "name": "微信公众号文章下载器",
-  "version": "1.0.0",
-  "description": "在浏览器中直接下载微信公众号文章，支持 Markdown、HTML 等格式",
+  "name": "公众号文章存为 Markdown",
+  "version": "2.0.0",
+  "description": "把当前打开的微信公众号文章保存为 Markdown，或把链接发给本地命令行下载",
   "permissions": [
     "activeTab",
-    "tabs",
-    "downloads",
-    "storage",
-    "scripting"
+    "scripting",
+    "downloads"
   ],
   "host_permissions": [
-    "https://mp.weixin.qq.com/*",
-    "https://*.qpic.cn/*",
-    "https://*.qlogo.cn/*"
+    "http://127.0.0.1:4546/*"
   ],
   "action": {
     "default_popup": "popup.html",
@@ -23,30 +19,9 @@
       "128": "icons/icon128.png"
     }
   },
-  "content_scripts": [
-    {
-      "matches": ["https://mp.weixin.qq.com/s/*"],
-      "js": ["content.js"],
-      "run_at": "document_idle"
-    },
-    {
-      "matches": ["https://mp.weixin.qq.com/mp/profile_ext*", "https://mp.weixin.qq.com/mp/homepage*"],
-      "js": ["batch-content.js"],
-      "run_at": "document_idle"
-    }
-  ],
-  "background": {
-    "service_worker": "background.js"
-  },
   "icons": {
     "16": "icons/icon16.png",
     "48": "icons/icon48.png",
     "128": "icons/icon128.png"
-  },
-  "web_accessible_resources": [
-    {
-      "resources": ["download.js"],
-      "matches": ["https://mp.weixin.qq.com/*"]
-    }
-  ]
+  }
 }
