@@ -3,8 +3,10 @@
 """
 import dataclasses
 import hashlib
+import os
 import re
 import shutil
+import tempfile
 import unicodedata
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -37,20 +39,28 @@ def safe_filename(name: str, max_length: int = 80, max_bytes: int = 150) -> str:
 
 def article_id(article: Article) -> str:
     """
-    由链接派生的 8 位稳定标识：同一篇文章（同 biz+mid+idx，或同一短链接）总是相同，
-    不同文章即使同号同日同标题也不同。
+    8 位稳定标识：同一篇文章总是相同，不同文章即使同号同日同标题也不同。
+    优先用页面变量里的 biz+mid+idx（不受 msg_link 写法影响），取不到时依次退回
+    链接里的 __biz/mid/idx 参数、短链接 /s/ 后的短码、整个链接。
     """
-    parts = urlsplit(article.url)
-    query = parse_qs(parts.query)
-    mid, idx = query.get("mid", [""])[0], query.get("idx", ["1"])[0]
-    if mid:
-        biz = article.biz or query.get("__biz", [""])[0]
-        key = f"{biz}:{mid}:{idx}"
-    elif parts.path.startswith("/s/"):
-        key = parts.path[len("/s/"):].strip("/")
+    if article.biz and article.mid:
+        key = f"{article.biz}:{article.mid}:{article.idx or '1'}"
     else:
-        key = article.url
+        parts = urlsplit(article.url)
+        query = parse_qs(parts.query)
+        biz = query.get("__biz", [""])[0] or article.biz
+        mid, idx = query.get("mid", [""])[0], query.get("idx", ["1"])[0]
+        if biz and mid:
+            key = f"{biz}:{mid}:{idx}"
+        elif parts.path.startswith("/s/") and parts.path.strip("/") != "s":
+            key = parts.path[len("/s/"):].strip("/")
+        else:
+            key = article.url
     return hashlib.sha1(key.encode("utf-8")).hexdigest()[:8]
+
+
+def _url_key(url: str) -> str:
+    return hashlib.sha1(url.encode("utf-8")).hexdigest()[:8]
 
 
 _MARKDOWN_UNSAFE = set(" ()[]<>%#")
@@ -81,6 +91,7 @@ class DownloadResult:
     article: Article
     path: Path
     failed_images: List[str] = field(default_factory=list)
+    kept_images: List[str] = field(default_factory=list)
 
 
 class ArticleDownloader:
@@ -101,6 +112,10 @@ class ArticleDownloader:
         return f"{when.strftime('%Y-%m-%d')}_{safe_filename(article.title)}_{article_id(article)}"
 
     def save(self, article: Article, download_images: Optional[bool] = None) -> DownloadResult:
+        """
+        先把图片和 Markdown 写到同目录的临时位置，全部成功后再替换旧结果；
+        中途出错或被中断时旧文件保持原样，临时文件会被清理。
+        """
         if download_images is None:
             download_images = self.download_images
         if not BeautifulSoup(article.content_html, "html.parser").get_text(strip=True) and not article.images:
@@ -108,33 +123,58 @@ class ArticleDownloader:
         folder = self.output_dir / safe_filename(article.account_name or "未知公众号")
         folder.mkdir(parents=True, exist_ok=True)
         stem = self.article_stem(article)
-        failed: List[str] = []
-        if download_images and article.images:
-            local, failed = self._save_images(article.images, folder, f"{stem}.assets")
-            article = dataclasses.replace(article, content_html=_replace_image_src(article.content_html, local))
+        assets_name = f"{stem}.assets"
         md_path = folder / f"{stem}.md"
-        md_path.write_text(render_markdown(article), encoding="utf-8")
-        return DownloadResult(article=article, path=md_path, failed_images=failed)
+        failed: List[str] = []
+        kept: List[str] = []
+        new_assets: Optional[Path] = None
+        md_tmp: Optional[Path] = None
+        try:
+            if download_images and article.images:
+                new_assets = Path(tempfile.mkdtemp(dir=folder, prefix=f".{assets_name}."))
+                local, failed, kept = self._save_images(article.images, new_assets, folder / assets_name, assets_name)
+                article = dataclasses.replace(article, content_html=_replace_image_src(article.content_html, local))
+            fd, tmp_name = tempfile.mkstemp(dir=folder, prefix=f".{stem}.", suffix=".md.tmp")
+            md_tmp = Path(tmp_name)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(render_markdown(article))
+            if new_assets is not None:
+                _replace_dir(new_assets, folder / assets_name)
+                new_assets = None
+            os.replace(md_tmp, md_path)
+            md_tmp = None
+        finally:
+            if new_assets is not None:
+                shutil.rmtree(new_assets, ignore_errors=True)
+            if md_tmp is not None:
+                md_tmp.unlink(missing_ok=True)
+        return DownloadResult(article=article, path=md_path, failed_images=failed, kept_images=kept)
 
-    def _save_images(self, urls: List[str], folder: Path, assets_name: str):
-        """返回 (原始链接 -> Markdown 里用的相对路径, 下载失败的链接)；失败的图片保留原始链接"""
-        assets = folder / assets_name
-        # 重复下载同一篇时清掉上次的图片，保证结果和第一次一致
-        if assets.is_dir():
-            shutil.rmtree(assets)
+    def _save_images(self, urls: List[str], target: Path, previous: Path, assets_name: str):
+        """
+        把图片下载到 target。返回 (原始链接 -> 相对路径, 失败且只能用远程链接的, 失败但沿用了上次本地文件的)。
+        文件名带链接哈希，重下时才能认出上次下载的是哪张图。
+        """
         local: Dict[str, str] = {}
         failed: List[str] = []
+        kept: List[str] = []
         for index, url in enumerate(urls, 1):
+            key = _url_key(url)
             try:
                 data, content_type = self.fetcher.get_image(url)
             except WeChatError:
-                failed.append(url)
-                continue
-            name = f"{index:03d}{image_extension(url, content_type)}"
-            assets.mkdir(exist_ok=True)
-            (assets / name).write_bytes(data)
+                old = next(previous.glob(f"*_{key}.*"), None) if previous.is_dir() else None
+                if old is None:
+                    failed.append(url)
+                    continue
+                name = f"{index:03d}_{key}{old.suffix}"
+                shutil.copy2(old, target / name)
+                kept.append(url)
+            else:
+                name = f"{index:03d}_{key}{image_extension(url, content_type)}"
+                (target / name).write_bytes(data)
             local[url] = markdown_path(f"{assets_name}/{name}")
-        return local, failed
+        return local, failed, kept
 
     def download_article(self, article_data: Dict, account_name: str = "",
                          download_images: Optional[bool] = None) -> Optional[Path]:
@@ -147,6 +187,8 @@ class ArticleDownloader:
             account_name=account_name or article_data.get("account_name", ""),
             biz=article_data.get("biz", ""),
             user_name=article_data.get("user_name", ""),
+            mid=str(article_data.get("mid", "")),
+            idx=str(article_data.get("idx", "")),
             publish_time=datetime.fromtimestamp(publish_time, tz=CHINA_TZ) if publish_time else None,
             description=article_data.get("description", ""),
             cover=article_data.get("cover", ""),
@@ -155,6 +197,22 @@ class ArticleDownloader:
             images=list(article_data.get("images", [])),
         )
         return self.save(article, download_images=download_images).path
+
+
+def _replace_dir(new: Path, dest: Path) -> None:
+    """目录不能直接 os.replace 覆盖非空目录：先把旧目录挪开，换上新目录后再删旧的"""
+    if not dest.exists():
+        os.replace(new, dest)
+        return
+    backup = Path(tempfile.mkdtemp(dir=dest.parent, prefix=f".{dest.name}.old."))
+    os.replace(dest, backup / dest.name)
+    try:
+        os.replace(new, dest)
+    except BaseException:
+        os.replace(backup / dest.name, dest)
+        raise
+    finally:
+        shutil.rmtree(backup, ignore_errors=True)
 
 
 def _replace_image_src(content_html: str, local: Dict[str, str]) -> str:

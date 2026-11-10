@@ -3,6 +3,9 @@
 """
 from pathlib import Path
 
+import hashlib
+import re
+
 import pytest
 import yaml
 
@@ -14,14 +17,14 @@ from wechat_downloader.fetch import VerificationRequired, WeChatError, check_art
 from wechat_downloader.parse import ParseError, extract_js_var, parse_article
 from wechat_downloader.render import render_markdown
 
-from test_article import split_front_matter
+from test_article import image_name, split_front_matter
 
 FIXTURES = Path(__file__).parent / "fixtures"
 SHORT_URL = "https://mp.weixin.qq.com/s/AbCdEf123"
 
 
 def make_page(content: str, title: str = "测试", biz: str = "MzI4NjAxNjY4Nw==",
-              msg_link: str = "", author: str = "作者", nickname: str = "测试号") -> str:
+              msg_link: str = "", author: str = "作者", nickname: str = "测试号", extra_js: str = "") -> str:
     return f"""<html><script>
 var biz = "{biz}";
 var nickname = htmlDecode("{nickname}");
@@ -29,6 +32,7 @@ var msg_title = '{title}'.html(false);
 var author = "{author}";
 var create_time = "1733136173" * 1;
 var msg_link = "{msg_link}";
+{extra_js}
 </script><div id="js_content">{content}</div></html>"""
 
 
@@ -94,9 +98,10 @@ def test_2_image_alt_order_and_missing_alt_remote():
 def test_2_image_alt_order_and_missing_alt_local(tmp_path):
     downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(make_page(IMAGES_HTML)))
     md = downloader.download(SHORT_URL).path.read_text(encoding="utf-8")
-    assert "![前置说明](2024-12-02_测试_52a063f7.assets/001.jpg)" in md
-    assert "![](2024-12-02_测试_52a063f7.assets/002.jpg)" in md
-    assert "![后置说明](2024-12-02_测试_52a063f7.assets/003.jpg)" in md
+    assets = "2024-12-02_测试_52a063f7.assets"
+    assert f"![前置说明]({assets}/{image_name(1, 'https://mmbiz.qpic.cn/a/640?wx_fmt=png', '.jpg')})" in md
+    assert f"![]({assets}/{image_name(2, 'https://mmbiz.qpic.cn/b/640?wx_fmt=jpeg', '.jpg')})" in md
+    assert f"![后置说明]({assets}/{image_name(3, 'https://mmbiz.qpic.cn/c/640', '.jpg')})" in md
 
 
 # 3) 验证页、空正文不能写出“成功”的文件
@@ -226,7 +231,7 @@ def test_p1_same_title_different_articles_do_not_collide(tmp_path):
     assert "第 100 篇" in first.read_text(encoding="utf-8")
     assert "第 200 篇" in second.read_text(encoding="utf-8")
     for path, mid in ((first, 100), (second, 200)):
-        image = path.with_name(path.stem + ".assets") / "001.jpg"
+        image = path.with_name(path.stem + ".assets") / image_name(1, f"https://mmbiz.qpic.cn/{mid}/640", ".jpg")
         assert image.read_bytes() == f"img:https://mmbiz.qpic.cn/{mid}/640".encode()
 
 
@@ -309,3 +314,146 @@ def test_p3_emoji_metadata_round_trips_through_file(tmp_path):
     assert meta["account"] == "号🎉"
     assert "# 表情 😀: 测试" in body
     assert result.path.parent.name == "号🎉"
+
+
+# ---- PR #2 第二轮复核 ----
+
+def snapshot(root: Path):
+    return {str(p.relative_to(root)): p.read_bytes() for p in sorted(root.rglob("*")) if p.is_file()}
+
+
+def body_of(path: Path) -> str:
+    return split_front_matter(path.read_text(encoding="utf-8"))[1]
+
+
+def no_temp_files(root: Path) -> bool:
+    return not [p for p in root.rglob("*") if p.name.startswith(".")]
+
+
+class InterruptingFetcher(FakeFetcher):
+    def __init__(self, page, fail_at: int):
+        super().__init__(page)
+        self.fail_at = fail_at
+
+    def get_image(self, url):
+        if len(self.image_requests) + 1 == self.fail_at:
+            raise KeyboardInterrupt
+        return super().get_image(url)
+
+
+REDOWNLOAD_PAGE = make_page(IMAGES_HTML, msg_link=long_link(500))
+IMAGE_B = "https://mmbiz.qpic.cn/b/640?wx_fmt=jpeg"
+
+
+# R1) 重下失败不能破坏上次成功的结果
+
+def test_r1_failed_image_on_redownload_keeps_previous_local_copy(tmp_path):
+    first = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    before = snapshot(first.path.with_suffix(".assets"))
+    again = ArticleDownloader(
+        output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE, broken_images=[IMAGE_B])
+    ).download(SHORT_URL)
+    assert again.path == first.path
+    assert again.failed_images == []
+    assert again.kept_images == [IMAGE_B]
+    assert snapshot(first.path.with_suffix(".assets")) == before
+    assert IMAGE_B not in body_of(again.path)
+    assert no_temp_files(tmp_path)
+
+
+def test_r1_cli_reports_kept_images(tmp_path, monkeypatch, capsys):
+    ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    fetcher = FakeFetcher(REDOWNLOAD_PAGE, broken_images=[IMAGE_B])
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main([SHORT_URL, "-o", str(tmp_path)]) == 0
+    out = capsys.readouterr().out
+    assert "沿用了上次下载的本地文件" in out and IMAGE_B in out
+
+
+@pytest.mark.parametrize("fail_at", [1, 2, 3])
+def test_r1_interrupted_redownload_leaves_old_result_intact(tmp_path, fail_at):
+    ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    before = snapshot(tmp_path)
+    downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=InterruptingFetcher(REDOWNLOAD_PAGE, fail_at))
+    with pytest.raises(KeyboardInterrupt):
+        downloader.download(SHORT_URL)
+    assert snapshot(tmp_path) == before
+    assert no_temp_files(tmp_path)
+
+
+def test_r1_failure_while_writing_markdown_leaves_old_result_intact(tmp_path, monkeypatch):
+    ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    before = snapshot(tmp_path)
+
+    def broken_render(article):
+        raise RuntimeError("磁盘写满")
+
+    monkeypatch.setattr(downloader_module, "render_markdown", broken_render)
+    with pytest.raises(RuntimeError):
+        ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    assert snapshot(tmp_path) == before
+    assert no_temp_files(tmp_path)
+
+
+def test_r1_interrupted_first_download_leaves_nothing(tmp_path):
+    downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=InterruptingFetcher(REDOWNLOAD_PAGE, 2))
+    with pytest.raises(KeyboardInterrupt):
+        downloader.download(SHORT_URL)
+    assert [p for p in tmp_path.rglob("*") if p.is_file()] == []
+    assert no_temp_files(tmp_path)
+
+
+def test_r1_redownload_with_changed_images_drops_stale_files(tmp_path):
+    ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(REDOWNLOAD_PAGE)).download(SHORT_URL)
+    changed = make_page('<p><img data-src="https://mmbiz.qpic.cn/new/640"></p>', msg_link=long_link(500))
+    result = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(changed)).download(SHORT_URL)
+    assert [p.name for p in result.path.with_suffix(".assets").iterdir()] == [
+        image_name(1, "https://mmbiz.qpic.cn/new/640", ".jpg")
+    ]
+
+
+# R2) 文章 ID 优先取页面变量 biz/mid/idx，不受 msg_link 写法影响
+
+PAGE_VARS = 'var mid = "" || "2650239155"; var idx = "2";'
+EXPECTED_ID = hashlib.sha1(b"MzI4NjAxNjY4Nw==:2650239155:2").hexdigest()[:8]
+LONG_REQUEST = "https://mp.weixin.qq.com/s?__biz=MzI4NjAxNjY4Nw==&mid=2650239155&idx=2&sn=abc&chksm=x"
+
+
+@pytest.mark.parametrize("msg_link, request_url", [
+    ("https://mp.weixin.qq.com/s/ShortCode123", "https://mp.weixin.qq.com/s/ShortCode123"),
+    ("http://mp.weixin.qq.com/s?__biz=MzI4NjAxNjY4Nw==\\x26amp;mid=2650239155\\x26amp;idx=2\\x26amp;sn=abc#rd",
+     LONG_REQUEST),
+    ("https://mp.weixin.qq.com/s?__biz=MzI4NjAxNjY4Nw==&mid=2650239155&idx=2&sn=abc&chksm=other", SHORT_URL),
+    ("", "https://mp.weixin.qq.com/s/AnotherCode"),
+    ("", LONG_REQUEST),
+])
+def test_r2_id_from_page_vars_regardless_of_msg_link(msg_link, request_url):
+    page = make_page("<p>正文</p>", msg_link=msg_link, extra_js=PAGE_VARS)
+    assert article_id(parse_article(page, request_url)) == EXPECTED_ID
+
+
+def test_r2_falls_back_to_long_url_params_then_short_code():
+    without_vars = make_page("<p>正文</p>")
+    assert article_id(parse_article(without_vars, LONG_REQUEST)) == EXPECTED_ID
+    short = article_id(parse_article(without_vars, "https://mp.weixin.qq.com/s/ShortCode123"))
+    assert short == hashlib.sha1(b"ShortCode123").hexdigest()[:8]
+
+
+def test_r2_mid_falls_back_to_appmsgid():
+    page = make_page("<p>正文</p>", extra_js='var appmsgid = "2650239155"; var itemidx = "2";')
+    assert article_id(parse_article(page, SHORT_URL)) == EXPECTED_ID
+
+
+@pytest.mark.parametrize("name, mid", [
+    ("ruanyifeng-ai-workflow", "2650239155"),
+    ("python-wechat-backend", "2653552297"),
+    ("weixin-reputation-guide", "548251452"),
+])
+def test_r2_real_pages_id_stable_when_msg_link_changes(name, mid):
+    page = (FIXTURES / "real" / f"{name}.html").read_text(encoding="utf-8")
+    original = parse_article(page, SHORT_URL)
+    assert original.mid == mid and original.idx == "1"
+    stripped = re.sub(r"var msg_link = [^;]*;", 'var msg_link = "";', page)
+    expected = hashlib.sha1(f"{original.biz}:{mid}:1".encode()).hexdigest()[:8]
+    assert article_id(original) == expected
+    assert article_id(parse_article(stripped, "https://mp.weixin.qq.com/s/xyz")) == expected

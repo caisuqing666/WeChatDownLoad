@@ -1,3 +1,4 @@
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -24,6 +25,14 @@ def split_front_matter(md):
 
 
 SHORT_URL = "https://mp.weixin.qq.com/s/AbCdEf123"
+
+
+def image_name(index, url, ext):
+    return f"{index:03d}_{hashlib.sha1(url.encode()).hexdigest()[:8]}{ext}"
+
+
+IMG1 = "https://mmbiz.qpic.cn/mmbiz_png/abc/640?wx_fmt=png&from=appmsg"
+IMG2 = "https://mmbiz.qpic.cn/mmbiz_jpg/def/640?wx_fmt=jpeg"
 
 
 @pytest.fixture
@@ -129,11 +138,11 @@ def test_download_saves_images_with_relative_links(tmp_path, page):
     downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(page))
     result = downloader.download(SHORT_URL)
     assets = result.path.with_name(result.path.stem + ".assets")
-    assert sorted(p.name for p in assets.iterdir()) == ["001.png", "002.png"]
-    assert (assets / "001.png").read_bytes().endswith(b"abc/640?wx_fmt=png&from=appmsg")
+    assert sorted(p.name for p in assets.iterdir()) == [image_name(1, IMG1, ".png"), image_name(2, IMG2, ".png")]
+    assert (assets / image_name(1, IMG1, ".png")).read_bytes().endswith(b"abc/640?wx_fmt=png&from=appmsg")
     md = result.path.read_text(encoding="utf-8")
-    assert f"![]({markdown_path(assets.name)}/001.png)" in md
-    assert f"![示意图]({markdown_path(assets.name)}/002.png)" in md
+    assert f"![]({markdown_path(assets.name)}/{image_name(1, IMG1, '.png')})" in md
+    assert f"![示意图]({markdown_path(assets.name)}/{image_name(2, IMG2, '.png')})" in md
     assert "](https://mmbiz.qpic.cn" not in md
     assert result.failed_images == []
 
@@ -145,7 +154,7 @@ def test_failed_image_keeps_remote_link(tmp_path, page):
     md = result.path.read_text(encoding="utf-8")
     assert result.failed_images == [broken]
     assert f"![示意图]({broken})" in md
-    assert "/001.png)" in md
+    assert f"/{image_name(1, IMG1, '.png')})" in md
 
 
 def test_verification_page_writes_nothing(tmp_path):

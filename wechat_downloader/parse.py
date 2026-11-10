@@ -39,6 +39,8 @@ class Article:
     account_name: str = ""
     biz: str = ""
     user_name: str = ""
+    mid: str = ""
+    idx: str = ""
     publish_time: Optional[datetime] = None
     description: str = ""
     cover: str = ""
@@ -58,6 +60,8 @@ class Article:
             "account_name": self.account_name,
             "biz": self.biz,
             "user_name": self.user_name,
+            "mid": self.mid,
+            "idx": self.idx,
             "publish_time": self.publish_timestamp,
             "description": self.description,
             "cover": self.cover,
@@ -137,6 +141,14 @@ def _parse_time(page: str) -> Optional[datetime]:
         if value.isdigit():
             return datetime.fromtimestamp(int(value), tz=CHINA_TZ)
     return None
+
+
+def _digits(page: str, *names: str) -> str:
+    for name in names:
+        value = extract_js_var(page, name)
+        if value.isdigit():
+            return value
+    return ""
 
 
 def _normalize_src(src: str) -> str:
@@ -241,6 +253,8 @@ def parse_article(page: str, url: str) -> Article:
         account_name=account_name,
         biz=extract_js_var(page, "biz"),
         user_name=extract_js_var(page, "user_name"),
+        mid=_digits(page, "mid", "appmsgid"),
+        idx=_digits(page, "idx", "itemidx"),
         publish_time=_parse_time(page),
         description=extract_js_var(page, "msg_desc"),
         cover=_normalize_src(extract_js_var(page, "msg_cdn_url")),
