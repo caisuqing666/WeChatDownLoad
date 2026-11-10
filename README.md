@@ -6,6 +6,26 @@
 >
 > ---
 
+## Python 命令行版：下载文章为 Markdown
+
+把公众号文章保存为带 front matter 的 Markdown。图片保留微信原始链接（联网时可显示），不下载到本地。
+
+```bash
+pip install -r requirements.txt
+
+# 单篇（支持 /s/xxx 短链接，也支持带 &amp; 的长链接）
+python -m wechat_downloader.main "https://mp.weixin.qq.com/s/xxx"
+
+# 多篇，默认每篇间隔 2 秒，可用 --interval 调整
+python -m wechat_downloader.main URL1 URL2 URL3 -o ~/Documents/公众号
+```
+
+输出位置：`<输出目录>/<公众号名称>/<发布日期>_<标题>.md`。
+
+遇到“环境异常”验证页时程序会停止后续请求；稍等一段时间，或在浏览器里打开该链接完成验证后再试。图片/视频分享类消息暂不支持。
+
+运行测试：`pip install pytest && python -m pytest tests`
+
 # 微信公众号文章批量下载工具
 
 一款可以批量下载微信公众号文章内容的小工具，无需安装证书，支持Window、MacOS

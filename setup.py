@@ -30,6 +30,8 @@ setup(
     python_requires=">=3.7",
     install_requires=[
         "requests>=2.31.0",
+        "beautifulsoup4>=4.12.0",
+        "markdownify>=1.0.0",
     ],
     extras_require={
         "clipboard": ["pyperclip>=1.8.2"],
