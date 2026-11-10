@@ -99,6 +99,8 @@ def _main(argv: Optional[List[str]] = None) -> int:
                         help=f'链接清单文件：每行一个链接，忽略空行和 # 注释；进度记在输出目录的 {PROGRESS_FILE}')
     parser.add_argument('--delay', type=float, default=3.0, help='--urls 模式两篇之间的基础等待秒数（默认: 3）')
     parser.add_argument('--jitter', type=float, default=2.0, help='--urls 模式在基础等待上再随机加 0~N 秒（默认: 2）')
+    parser.add_argument('--no-retry-images', action='store_true',
+                        help='--urls 模式不重试上次有图片下载失败的文章（默认会重新下载补齐缺图）')
     parser.add_argument('--token', '-t', help='历史文章接口 token（仅 --batch 使用）')
     parser.add_argument('--token-clipboard', action='store_true', help='从剪贴板读取token')
     parser.add_argument('--batch', '-b', action='store_true', help='通过历史文章接口批量下载该公众号文章（需要 token）')
@@ -162,9 +164,10 @@ def _download_url_file(args) -> int:
         print(f"错误: {args.urls_file} 里没有文章链接")
         return 1
     downloader = ArticleDownloader(output_dir=args.output, download_images=not args.no_images)
-    result = download_url_list(downloader, urls, delay=args.delay, jitter=args.jitter)
+    result = download_url_list(downloader, urls, delay=args.delay, jitter=args.jitter,
+                               retry_images=not args.no_retry_images)
     print_summary(result, downloader.output_dir / PROGRESS_FILE)
-    return 1 if result.failed or result.stopped else 0
+    return 1 if result.failed or result.partial or result.stopped else 0
 
 
 if __name__ == '__main__':

@@ -361,3 +361,129 @@ def test_cli_missing_or_empty_links_file(tmp_path, capsys):
     empty.write_text("# 只有注释\n\n", encoding="utf-8")
     assert cli.main(["--urls", str(empty), "-o", str(tmp_path)]) == 1
     assert "没有文章链接" in capsys.readouterr().out
+
+
+# ---- 缺图：记为 partial，重跑补齐 ----
+
+IMG_A = "https://mmbiz.qpic.cn/a/640?wx_fmt=png"
+IMG_B = "https://mmbiz.qpic.cn/b/640?wx_fmt=jpeg"
+
+
+def page_with_images(mid):
+    content = f'<p>正文 {mid}</p><p><img data-src="{IMG_A}"></p><p><img data-src="{IMG_B}"></p>'
+    return make_page(content, title=f"图文{mid}", extra_js=f'var mid = "{mid}"; var idx = "1";')
+
+
+class ImageFetcher(MapFetcher):
+    def __init__(self, pages, broken=()):
+        super().__init__(pages)
+        self.broken = set(broken)
+        self.image_requests = []
+
+    def get_image(self, url):
+        self.image_requests.append(url)
+        if url in self.broken:
+            raise ArticleUnavailable("下载图片失败：404")
+        return b"img:" + url.encode(), "image/jpeg"
+
+
+IMG_URLS = [long_url(201), "https://mp.weixin.qq.com/s/Short202"]
+
+
+def image_pages():
+    return {IMG_URLS[0]: page_with_images(201), IMG_URLS[1]: page_with_images(202)}
+
+
+def md_of(tmp_path, url):
+    return tmp_path / load_progress(tmp_path)["articles"][url]["path"]
+
+
+def test_failed_images_recorded_as_partial_then_completed_on_rerun(tmp_path):
+    result = run(tmp_path, ImageFetcher(image_pages(), broken={IMG_B}), urls=IMG_URLS)
+    assert result.downloaded == 2 and [u for u, _, _ in result.partial] == IMG_URLS
+    for url in IMG_URLS:
+        entry = load_progress(tmp_path)["articles"][url]
+        assert entry["status"] == "partial"
+        assert entry["missing_images"] == 1 and entry["failed_images"] == [IMG_B]
+        assert IMG_B in md_of(tmp_path, url).read_text(encoding="utf-8")
+
+    fetcher = ImageFetcher(image_pages())
+    result = run(tmp_path, fetcher, urls=IMG_URLS)
+    assert fetcher.requests == IMG_URLS
+    assert result.partial == [] and result.downloaded == 2
+    for url in IMG_URLS:
+        entry = load_progress(tmp_path)["articles"][url]
+        assert entry["status"] == "done" and "failed_images" not in entry
+        md = md_of(tmp_path, url).read_text(encoding="utf-8")
+        assert "](https://" not in md
+
+    fetcher = ImageFetcher({})
+    assert run(tmp_path, fetcher, urls=IMG_URLS).skipped == 2 and fetcher.requests == []
+
+
+def test_still_failing_images_stay_partial_and_good_images_are_kept(tmp_path):
+    run(tmp_path, ImageFetcher(image_pages(), broken={IMG_B}), urls=IMG_URLS[:1])
+    for attempt in (2, 3):
+        fetcher = ImageFetcher(image_pages(), broken={IMG_A, IMG_B})
+        result = run(tmp_path, fetcher, urls=IMG_URLS[:1])
+        assert fetcher.requests == IMG_URLS[:1]
+        entry = load_progress(tmp_path)["articles"][IMG_URLS[0]]
+        assert entry["status"] == "partial" and entry["failed_images"] == [IMG_B]
+        assert entry["attempts"] == attempt
+        assert result.partial[0][2] == [IMG_B]
+    md_path = md_of(tmp_path, IMG_URLS[0])
+    md = md_path.read_text(encoding="utf-8")
+    assert IMG_A not in md and IMG_B in md
+    local = list(md_path.with_suffix(".assets").iterdir())
+    assert len(local) == 1 and local[0].read_bytes() == b"img:" + IMG_A.encode()
+
+
+def test_partial_long_link_not_skipped_by_file_id_without_progress(tmp_path):
+    run(tmp_path, ImageFetcher(image_pages(), broken={IMG_B}), urls=IMG_URLS[:1])
+    (tmp_path / PROGRESS_FILE).unlink()
+    fetcher = ImageFetcher(image_pages())
+    result = run(tmp_path, fetcher, urls=IMG_URLS[:1])
+    assert fetcher.requests == IMG_URLS[:1] and result.skipped == 0
+    assert load_progress(tmp_path)["articles"][IMG_URLS[0]]["status"] == "done"
+
+
+def test_complete_long_link_still_skipped_by_file_id(tmp_path):
+    run(tmp_path, ImageFetcher(image_pages()), urls=IMG_URLS[:1])
+    (tmp_path / PROGRESS_FILE).unlink()
+    fetcher = ImageFetcher({})
+    assert run(tmp_path, fetcher, urls=IMG_URLS[:1]).skipped == 1 and fetcher.requests == []
+
+
+def test_retry_images_off_skips_partial_but_reports_it(tmp_path):
+    run(tmp_path, ImageFetcher(image_pages(), broken={IMG_B}), urls=IMG_URLS)
+    (tmp_path / PROGRESS_FILE).unlink()
+    run(tmp_path, ImageFetcher({}), urls=IMG_URLS[:1], retry_images=False)
+    assert load_progress(tmp_path)["articles"][IMG_URLS[0]]["status"] == "partial"
+    run(tmp_path, ImageFetcher(image_pages(), broken={IMG_B}), urls=IMG_URLS[1:])
+    fetcher = ImageFetcher({})
+    result = run(tmp_path, fetcher, urls=IMG_URLS, retry_images=False)
+    assert fetcher.requests == [] and result.skipped == 2
+    assert [(u, m) for u, _, m in result.partial] == [(IMG_URLS[0], [IMG_B]), (IMG_URLS[1], [IMG_B])]
+
+
+def test_cli_summary_lists_partial_and_flag_disables_retry(tmp_path, monkeypatch, capsys):
+    links = tmp_path / "links.txt"
+    links.write_text("\n".join(IMG_URLS), encoding="utf-8")
+    out_dir = tmp_path / "out"
+    monkeypatch.setattr(batch_module.time, "sleep", lambda s: None)
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: ImageFetcher(image_pages(), broken={IMG_B}))
+    assert cli.main(["--urls", str(links), "-o", str(out_dir)]) == 1
+    out = capsys.readouterr().out
+    assert "缺图 2 篇" in out
+    assert "缺 1 张" in out.split("缺图的文章")[1]
+
+    fetcher = ImageFetcher({})
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--urls", str(links), "-o", str(out_dir), "--no-retry-images"]) == 1
+    assert fetcher.requests == [] and "未重试" in capsys.readouterr().out
+
+    fetcher = ImageFetcher(image_pages())
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--urls", str(links), "-o", str(out_dir)]) == 0
+    assert fetcher.requests == IMG_URLS
+    assert "缺图 0 篇" in capsys.readouterr().out
