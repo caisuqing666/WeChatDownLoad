@@ -426,3 +426,32 @@ def test_cli_album_partial_images_retried_on_rerun(tmp_path, monkeypatch, no_sle
     assert fetcher.server.requests == [] and fetcher.article_requests == partial
     progress = json.loads((out_dir / PROGRESS_FILE).read_text(encoding="utf-8"))["articles"]
     assert all(entry["status"] == "done" for entry in progress.values())
+
+
+def test_cli_album_no_images_then_default_run_fetches_images(tmp_path, monkeypatch, no_sleep):
+    out_dir = tmp_path / "out"
+    image = "https://mmbiz.qpic.cn/mmbiz_png/album-test/640?wx_fmt=png"
+    mid = "2247484024"
+    fetcher = AlbumSiteFetcher(AlbumServer(RWKV[2]), images={mid: image})
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--album", ALBUM_URL, "-o", str(out_dir), "--no-images"]) == 0
+    progress = json.loads((out_dir / PROGRESS_FILE).read_text(encoding="utf-8"))["articles"]
+    # 只有真有图片的那一篇标记为跳过了图片
+    skipped = [url for url, entry in progress.items() if entry["images_skipped"]]
+    assert len(skipped) == 1 and f"mid={mid}" in skipped[0]
+
+    # 再用 --no-images 运行：全部跳过
+    fetcher = AlbumSiteFetcher(AlbumServer(RWKV[2]), images={mid: image})
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--album", ALBUM_URL, "-o", str(out_dir), "--no-images"]) == 0
+    assert fetcher.server.requests == [] and fetcher.article_requests == []
+
+    # 默认运行：列表用缓存，只重新处理那一篇并把图片存到本地
+    fetcher = AlbumSiteFetcher(AlbumServer(RWKV[2]), images={mid: image})
+    monkeypatch.setattr(downloader_module, "Fetcher", lambda: fetcher)
+    assert cli.main(["--album", ALBUM_URL, "-o", str(out_dir)]) == 0
+    assert fetcher.server.requests == [] and fetcher.article_requests == skipped
+    progress = json.loads((out_dir / PROGRESS_FILE).read_text(encoding="utf-8"))["articles"]
+    assert all(entry["status"] == "done" and entry["images_skipped"] is False for entry in progress.values())
+    md = next(p for p in out_dir.glob("*/*.md") if mid in p.read_text(encoding="utf-8"))
+    assert image not in md.read_text(encoding="utf-8") and any(md.with_suffix(".assets").iterdir())
