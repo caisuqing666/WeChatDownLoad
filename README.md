@@ -1,12 +1,17 @@
-> **本项目已停止维护**
->
-> - 单篇下载仍可能使用，但兼容性不再保证。
-> - 历史批量下载功能已不可靠，不再维护。
-> - 有需要的用户可自行评估其他持续维护的微信文章转 Markdown 工具。
->
-> ---
+# WeChatDownLoad
 
-## Python 命令行版：下载文章为 Markdown
+把微信公众号文章保存成 Markdown 的个人小工具，作者 CAI SUQING。
+
+包含两部分：
+
+- **命令行**（`wechat_downloader/`）：单篇、多篇、按链接清单（`--urls`）或整个合集（`--album`）下载为 Markdown，支持断点续传。
+- **浏览器扩展**（`chrome_extension/`）：在当前打开的文章页上一键保存，或把链接交给本地命令行下载。
+
+> 这是个人自用项目，按需维护。微信页面随时可能调整，兼容性不做保证。
+
+## 命令行
+
+需要 Python 3.7+。
 
 把公众号文章保存为 Markdown，文件开头是 YAML front matter（title、author、url、date 等）。图片下载到本地，Markdown 里用相对路径引用；加 `--no-images` 则保留微信原始图片链接。
 
@@ -75,94 +80,51 @@ python -m wechat_downloader.main --album "合集链接" -o ~/Documents/公众号
 - 接口说还有下一页（`continue_flag=1`）却没有返回新文章（空列表或整页重复），或返回里缺 `getalbum_resp`、`continue_flag` 缺失或不是 0/1 时，该页整页不收、游标不动，按 6、12 秒（`--delay` 更大时按比例加长）退避重试 2 次，仍然没有就停止，列表按未完成保存，稍后重新运行同一命令从断点接着翻。
 - 合集接口返回的不是 JSON（一般是“环境异常”验证页）时立即停止，提示稍后再跑；返回 `ret=10004` 表示 album_id 错误或合集不存在，其他非 0 的 `ret` 会原样报出。
 
+### 在 Python 代码里调用
+
+```python
+from wechat_downloader.batch import download_url_list, read_url_file
+from wechat_downloader.downloader import ArticleDownloader
+
+downloader = ArticleDownloader(output_dir="downloads")
+urls = read_url_file("links.txt")  # 与 --urls 相同：忽略空行和 # 注释，自动去重
+result = download_url_list(downloader, urls, delay=3, jitter=2)
+print(f"新下载 {result.downloaded} 篇，跳过 {result.skipped} 篇，失败 {len(result.failed)} 篇，缺图 {len(result.partial)} 篇")
+```
+
 ### 注意事项
 
 遇到“环境异常”验证页时程序会停止后续请求；稍等一段时间，或在浏览器里打开该链接完成验证后再试。长链接缺少 `chksm` 等参数时微信可能返回“未知错误”页，请复制完整链接或改用 /s/ 短链接。图片/视频分享类消息暂不支持。
 
-运行测试：`pip install pytest && python -m pytest tests`。`tests/fixtures/real/` 是真实抓取的文章页面（用 `tests/fixtures/trim_page.py` 去掉了无关的内联 JS/CSS），解析逻辑可以离线测试。`tests/fixtures/album/` 是真实的合集接口响应（看理想 96 篇完整 6 页、RWKV 31 篇、津房字的次条文章游标、空列表和 ret=10004）。
+## 浏览器扩展
 
-# 微信公众号文章批量下载工具
+适用于 Chrome / Edge 等 Chromium 浏览器。
 
-一款可以批量下载微信公众号文章内容的小工具，无需安装证书，支持Window、MacOS
+1. 打开 `chrome://extensions/`，开启右上角「开发者模式」。
+2. 点「加载已解压的扩展程序」，选择本仓库的 `chrome_extension` 文件夹。
+3. 打开一篇公众号文章，点工具栏里的扩展图标：
+   - **保存为 Markdown**：直接用当前页面内容生成，保存到 `下载/公众号/<公众号名称>/<发布日期>_<标题>.md`。图片保留微信原始链接，不下载到本地；需要本地图片时用下面的按钮交给命令行。
+   - **发送到本地命令行**：把当前链接交给本机的命令行下载，适合想统一存到某个目录的情况。需要先启动接收服务：
 
-支持下载微信公众号的历史消息，可以保存文章为html/mhtml/md/pdf/docx文件，支持评论、合集下载，保存文章内图片、视频、音频文件
+     ```bash
+     python -m wechat_downloader.receiver -o ~/Documents/公众号
+     ```
 
-<img width="1254" height="892" alt="image" src="https://github.com/user-attachments/assets/a8e74f9c-8f02-48dd-a444-43c066f9a048" />
-4.0更新 支持图片下载、日志记录；修复文章中视频下载失败、图文下载失败、自定义时间的问题
+     服务只监听 `127.0.0.1:4546`，只接受浏览器扩展发来的 `mp.weixin.qq.com/s` 文章链接，收到后逐篇排队下载，进度显示在终端里。
 
-下载链接：https://pan.quark.cn/s/09bdfa78d09b
+## 开发
 
-**macOS 用户注意**：如果在 macOS 上无法打开应用程序，请查看 [macOS 安装指南](MACOS_INSTALL.md) 或运行修复脚本：
 ```bash
-./fix_macos_app.sh
+pip install -r requirements.txt pytest
+python -m pytest tests
 ```
 
-欢迎关注公众号：长风的储物柜，获取最新更新消息🥳
+`tests/fixtures/real/` 是真实抓取的文章页面（用 `tests/fixtures/trim_page.py` 去掉了无关的内联 JS/CSS），解析逻辑可以离线测试。`tests/fixtures/album/` 是真实的合集接口响应（看理想 96 篇完整 6 页、RWKV 31 篇、津房字的次条文章游标、空列表和 ret=10004）。
 
-![微信公众号](https://github.com/user-attachments/assets/584c65c4-da1c-4e31-bd92-b18e3589483d)
+## 来源
 
-聊天群：https://t.me/changfengbox
+本仓库最初基于 [qiye45/wechatDownload](https://github.com/qiye45/wechatDownload) 的思路，现已重写为只做 Markdown 导出的命令行和浏览器扩展，与原项目的桌面软件无关。
 
-# 使用教程：
-1.打开想要下载的公众号里面的随便一篇文章，复制链接到软件中，点击获取公众号id
-![image](https://github.com/user-attachments/assets/9e8d05ea-0c23-4ac0-b337-c2e0958dbe8e)
-![image](https://github.com/user-attachments/assets/62faabee-9d93-4e0d-a4c7-5d045d47b791)
+## 免责声明
 
-
-2.在微信打开刚刚复制的链接（把自动复制好的链接，发到微信的文件传输助手，再点击打开），等待一会，软件会自动获取秘钥
-![image](https://github.com/user-attachments/assets/5120f2ba-1049-4381-9c48-81d89c88a7c2)
-
-3.然后就可以下载公众号的文章啦
-
-![image](https://github.com/user-attachments/assets/6c461c86-0cd6-4f5c-8c19-c6770e5e9cee)
-![image](https://github.com/qiye45/wechatDownload/assets/138199658/f5e95a6d-a22d-4bc0-980f-f0e91644145e)
-
-注意事项：需要用微信内置浏览器打开复制的链接
-
-![image](https://github.com/qiye45/wechatDownload/assets/138199658/bca604e8-d756-4971-aa6d-8b0c8cf88753)
-
-# 免责声明
-
-- **本软件提供的所有内容，仅可用作学习交流使用，禁止用于其他用途。请在下载24小时内删除。为尊重作者版权，请前往资源的原始发布网站观看，支持原创，谢谢。**
-
-
-# 更新日志：
-
-3.9更新 修复批量下载失败的问题；优化Markdown排版；导出公众号数据中，Excel增加公众号名称列表
-
-3.8更新 支持可选下载封面/音频/视频；支持下载纯文字文章；修复多篇文章时，只能下载第一篇的问题；修复合集下载失败的问题
-
-3.7更新 支持微信4.0测试版；修复部分合集下载失败的问题；修复自定义时间范围下载的问题
-
-3.6更新 支持微信4.0测试版本；支持只下载原创文章；修复部分合集下载失败的问题；适配黑暗模式；文件开头添加日期增加分隔符
-
-3.5更新：修复获取公众号id失败、下载失败的问题；支持下载公众号合集（专栏）[#148](https://github.com/qiye45/wechatDownload/issues/148)；添加开始下载页数提示
-
-3.4更新 添加暂停下载功能、添加开始下载页数小于0，会重新下载（填-1）、修复获取阅读量失败的问题
-
-3.3更新 下载的封面视频音频支持添加日期前缀，修复评论和评论回复下载失败的问题、导出表格功能标题被截断的问题
-
-3.2更新 修复获取秘钥、公众号id失败、自定义时长闪退的问题；提示前面加上当前时间
-
-3.1更新 修复获取秘钥失败问题 [#161](https://github.com/qiye45/wechatDownload/issues/161)
-
-3.0更新 优化文章排版 [#134](https://github.com/qiye45/wechatDownload/issues/134) ；支持翻页到指定日期范围，手动调整页数；支持mhtml下载；修复闪退问题
-
-2.7更新 支持下载评论回复，自动保存设置的选项，跳过已下载的文章；修复剪切板监听失败的问题
-
-2.6更新 修复下载空白的问题 https://github.com/qiye45/wechatDownload/issues/111 ，支持图文格式下载，支持以公众号文章标题命名视频、音频和封面啦
-
-2.5 支持了Macos版本🥳；支持表格的实时导出；修复数据采集缺失的问题；修复下载一些公众号失败、导出表格的数据不完整的问题；支持多篇文章下载
-
-2.4 支持下载视频、音频、封面图；修复微信文章下载失败的问题#58；添加自动监听剪切板功能，方便下载；添加下载失败的提示，修复无限出现暂停的提示
-
-2.3更新：支持阅读量，点赞数，分享数，评论数的数据导出；文章会下载到以公众号名称的目录下；支持按照阅读量下载，支持其他链接导出Word、PDF、MD格式；下载md格式时，去掉结尾一些无关信息
-
-2.2更新，支持暂停下载，支持按时间段下载，支持下载多篇推文的情况，支持导出公众号文章到表格，优化markdown的下载，支持markdown显示图片，修复下载闪退的问题
-
-2.1更新：支持下载评论，支持调整间隔时间，添加了快捷打开下载目录功能，修复下载失败时暂停的问题
-
-2.0更新：支持下载word、pdf文件
-![image](https://github.com/qiye45/wechatDownload/assets/138199658/82934da3-ca55-4440-9f0d-3c8ba0a2106a)
-
-1.1版本更新：支持下载图片，支持单篇微信文章下载，无需手动获取秘钥（微信打开文章时，能自动抓取秘钥）
+仅供个人学习、存档使用。文章版权归原作者所有，请勿用于转载或其他商业用途。
