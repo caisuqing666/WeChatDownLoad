@@ -2,10 +2,11 @@ from pathlib import Path
 
 import pytest
 
-from wechat_downloader.downloader import ArticleDownloader, safe_filename
+from wechat_downloader.downloader import ArticleDownloader, markdown_path, safe_filename
 from wechat_downloader.fetch import (
     ArticleUnavailable,
     VerificationRequired,
+    WeChatError,
     check_article_page,
     normalize_url,
 )
@@ -27,12 +28,20 @@ def article(page):
 
 
 class FakeFetcher:
-    def __init__(self, page):
+    def __init__(self, page, broken_images=()):
         self.page = page
+        self.broken_images = set(broken_images)
+        self.image_requests = []
 
     def get_article_html(self, url):
         check_article_page(self.page)
         return self.page
+
+    def get_image(self, url):
+        self.image_requests.append(url)
+        if url in self.broken_images:
+            raise WeChatError("下载图片失败：404")
+        return b"fake-image:" + url.encode(), "image/png"
 
 
 def test_js_var_takes_first_non_empty_literal(page):
@@ -51,6 +60,12 @@ def test_metadata_comes_from_page_not_short_url(article):
     assert article.publish_time.isoformat() == "2024-12-02T18:42:53+08:00"
     assert article.cover == "https://mmbiz.qpic.cn/mmbiz_jpg/cover/0?wx_fmt=jpeg"
     assert article.url == "https://mp.weixin.qq.com/s?__biz=MzI4NjAxNjY4Nw==&mid=1&idx=1&sn=abc"
+
+
+def test_biz_is_not_read_from_url_params():
+    page = '<html><div id="js_content"><p>正文</p></div></html>'
+    article = parse_article(page, "https://mp.weixin.qq.com/s?__biz=FROM_URL==&mid=1&idx=1&sn=x")
+    assert article.biz == ""
 
 
 def test_nested_content_is_not_truncated(article):
@@ -84,12 +99,52 @@ def test_markdown_output(article):
     assert "<" not in md.split("---", 2)[2].replace("<br>", "")
 
 
-def test_download_writes_markdown_without_image_files(tmp_path, page):
-    downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(page))
+def test_front_matter_has_required_fields(article):
+    head = render_markdown(article).split("---", 2)[1]
+    keys = [line.split(":", 1)[0] for line in head.strip().splitlines()]
+    assert keys[:4] == ["title", "author", "url", "date"]
+    assert 'date: "2024-12-02T18:42:53+08:00"' in head
+
+
+def test_download_without_images_keeps_remote_links(tmp_path, page):
+    fetcher = FakeFetcher(page)
+    downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=fetcher, download_images=False)
     result = downloader.download(SHORT_URL)
     assert result.path == tmp_path / "测试公众号 & 朋友" / "2024-12-02_测试文章：_引号_ 与 '单引号'.md"
     assert result.path.read_text(encoding="utf-8").startswith("---\n")
     assert [p.name for p in result.path.parent.iterdir()] == [result.path.name]
+    assert fetcher.image_requests == []
+
+
+def test_download_saves_images_with_relative_links(tmp_path, page):
+    downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(page))
+    result = downloader.download(SHORT_URL)
+    assets = result.path.with_name(result.path.stem + ".assets")
+    assert sorted(p.name for p in assets.iterdir()) == ["001.png", "002.png"]
+    assert (assets / "001.png").read_bytes().endswith(b"abc/640?wx_fmt=png&from=appmsg")
+    md = result.path.read_text(encoding="utf-8")
+    assert f"![]({markdown_path(assets.name)}/001.png)" in md
+    assert f"![示意图]({markdown_path(assets.name)}/002.png)" in md
+    assert "](https://mmbiz.qpic.cn" not in md
+    assert result.failed_images == []
+
+
+def test_failed_image_keeps_remote_link(tmp_path, page):
+    broken = "https://mmbiz.qpic.cn/mmbiz_jpg/def/640?wx_fmt=jpeg"
+    downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(page, [broken]))
+    result = downloader.download(SHORT_URL)
+    md = result.path.read_text(encoding="utf-8")
+    assert result.failed_images == [broken]
+    assert f"![示意图]({broken})" in md
+    assert "/001.png)" in md
+
+
+def test_verification_page_writes_nothing(tmp_path):
+    page = (FIXTURES / "verify.html").read_text(encoding="utf-8")
+    downloader = ArticleDownloader(output_dir=str(tmp_path), fetcher=FakeFetcher(page))
+    with pytest.raises(VerificationRequired, match="环境异常"):
+        downloader.download(SHORT_URL)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_verification_page_detected():
