@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta property="og:title" content="og 标题不应被优先使用">
+<script>
+var biz = "" || "MzI4NjAxNjY4Nw==";
+var biz = opt.biz || window.biz;
+var nickname = htmlDecode("测试公众号 \x26amp; 朋友");
+var msg_title = '测试文章：\x26quot;引号\x26quot; 与 \'单引号\''.html(false);
+var author = "张三";
+var create_time = "1733136173" * 1;
+var msg_desc = htmlDecode("这是一段摘要");
+var msg_cdn_url = "http://mmbiz.qpic.cn/mmbiz_jpg/cover/0?wx_fmt=jpeg";
+var msg_source_url = 'https://example.com/original';
+var msg_link = "http://mp.weixin.qq.com/s?__biz=MzI4NjAxNjY4Nw==\x26amp;mid=1\x26amp;idx=1\x26amp;sn=abc#rd";
+</script>
+</head>
+<body>
+<h1 class="rich_media_title " id="activity-name">DOM 里的标题</h1>
+<a id="js_name">DOM 公众号名</a>
+<div class="rich_media_content js_underline_content" id="js_content" style="visibility: hidden; opacity: 0; ">
+  <section style="color: red;">
+    <section><h2><span>一、引言</span></h2></section>
+    <section><p>第一段，<strong>加粗</strong>文字。</p></section>
+    <section>
+      <div><p>嵌套在 div 里的第二段</p></div>
+    </section>
+    <p><img class="rich_pages wxw-img" data-src="https://mmbiz.qpic.cn/mmbiz_png/abc/640?wx_fmt=png&amp;from=appmsg" src="data:image/gif;base64,R0lGOD" alt="null"></p>
+    <p><img src="//mmbiz.qpic.cn/mmbiz_jpg/def/640?wx_fmt=jpeg" alt="示意图"></p>
+    <section class="code-snippet__fix code-snippet__js">
+      <ul class="code-snippet__line-index code-snippet__js"><li></li><li></li><li></li></ul>
+      <pre class="code-snippet__js" data-lang="python"><code><span class="code-snippet_outer">def hello():</span></code><code><span class="code-snippet_outer">    return "*not italic*"</span></code><code><span class="code-snippet_outer"><br></span></code><code><span class="code-snippet_outer">print(hello())</span></code></pre>
+    </section>
+    <mp-common-profile data-nickname="别的公众号" data-alias="other"></mp-common-profile>
+    <script>window.shouldNotAppear = true;</script>
+    <p>最后一段。</p>
+  </section>
+</div>
+</body>
+</html>
